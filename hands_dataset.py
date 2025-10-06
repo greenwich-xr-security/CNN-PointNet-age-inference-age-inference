@@ -14,12 +14,14 @@ import torch
 from PIL import Image, UnidentifiedImageError
 from torch.utils.data import Dataset
 
-# ---------------------------------------------------------------------------
-# Paths
-PRIMARY_ROOT = Path(r"C:\Users\Staff\Documents\HandsDatasets\11kHands\Hands")
-PRIMARY_CSV = Path(r"C:\Users\Staff\Documents\HandsDatasets\11kHands\HandInfo.csv")
-ARCHIVE_ROOT = Path(r"C:\Users\Staff\Documents\HandsDatasets\archive\Photos")
-ARCHIVE_CSV = Path(r"C:\Users\Staff\Documents\HandsDatasets\archive\annotated_dataset_details.csv")
+# Base directory for all datasets
+ROOT = Path(r"C:\Users\Staff\OneDrive - University of Greenwich\HandsDatasets")
+
+# Subdirectories and CSV files relative to ROOT
+PRIMARY_ROOT = ROOT / "11kHands" / "Hands"
+PRIMARY_CSV = ROOT / "11kHands" / "HandInfo.csv"
+ARCHIVE_ROOT = ROOT / "archive" / "Photos"
+ARCHIVE_CSV = ROOT / "archive" / "annotated_dataset_details.csv"
 
 # ---------------------------------------------------------------------------
 # Label normalisation helpers
