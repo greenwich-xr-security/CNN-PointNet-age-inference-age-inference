@@ -7,12 +7,18 @@ training or inference scripts.
 from __future__ import annotations
 
 from pathlib import Path
-from typing import Dict, Iterable, Optional, Tuple
+from typing import Dict, Optional, Tuple
 
+import cv2
+import numpy as np
 import pandas as pd
-import torch
 from PIL import Image, UnidentifiedImageError
 from torch.utils.data import Dataset
+
+from handLandmarks.handLandmarksDetection import (
+    MediaPipeTaskHandLandmarkDetector,
+    SentisHandLandmarkDetector,
+)
 
 # Base directory for all datasets
 ROOT = Path(r"C:\Users\Staff\OneDrive - University of Greenwich\HandsDatasets")
@@ -73,6 +79,164 @@ def _normalise_gender(raw: object) -> Optional[str]:
 
 
 # ---------------------------------------------------------------------------
+# Bounding-box helpers
+
+_MP_DETECTOR: Optional[MediaPipeTaskHandLandmarkDetector] = None
+_SENTIS_DETECTOR: Optional[SentisHandLandmarkDetector] = None
+
+
+def _get_mediapipe_detector() -> Optional[MediaPipeTaskHandLandmarkDetector]:
+    global _MP_DETECTOR
+    if _MP_DETECTOR is not None:
+        return _MP_DETECTOR
+    try:
+        _MP_DETECTOR = MediaPipeTaskHandLandmarkDetector()
+    except FileNotFoundError as exc:
+        print(f"[bbox] MediaPipe detector unavailable: {exc}")
+        _MP_DETECTOR = None
+    return _MP_DETECTOR
+
+
+def _get_sentis_detector() -> Optional[SentisHandLandmarkDetector]:
+    global _SENTIS_DETECTOR
+    if _SENTIS_DETECTOR is not None:
+        return _SENTIS_DETECTOR
+    try:
+        _SENTIS_DETECTOR = SentisHandLandmarkDetector()
+    except Exception as exc:  # noqa: BLE001
+        print(f"[bbox] Sentis detector unavailable: {exc}")
+        _SENTIS_DETECTOR = None
+    return _SENTIS_DETECTOR
+
+
+def _parse_bbox(raw: object) -> Optional[Tuple[int, int, int, int]]:
+    if raw is None or (isinstance(raw, float) and pd.isna(raw)):
+        return None
+    if isinstance(raw, str):
+        cleaned = (
+            raw.strip()
+            .replace("[", "")
+            .replace("]", "")
+            .replace("(", "")
+            .replace(")", "")
+        )
+        if not cleaned:
+            return None
+        cleaned = cleaned.replace(";", ",")
+        if "," in cleaned:
+            parts = [p.strip() for p in cleaned.split(",") if p.strip()]
+        else:
+            parts = [p.strip() for p in cleaned.split() if p.strip()]
+    elif isinstance(raw, (list, tuple)):
+        parts = list(raw)
+    else:
+        return None
+
+    if len(parts) != 4:
+        return None
+    try:
+        values = tuple(int(round(float(p))) for p in parts)
+    except (TypeError, ValueError):
+        return None
+    return values  # xmin, ymin, xmax, ymax
+
+
+def _bbox_to_string(bbox: Optional[Tuple[int, int, int, int]]) -> str:
+    if bbox is None:
+        return ""
+    return ",".join(str(int(v)) for v in bbox)
+
+
+def _compute_bbox_for_image(image_path: Path) -> Optional[Tuple[int, int, int, int]]:
+    img = cv2.imread(str(image_path))
+    if img is None:
+        print(f"[bbox] Warning: failed to read image '{image_path}'")
+        return None
+
+    height, width = img.shape[:2]
+
+    def _detect_with(detector) -> Optional[np.ndarray]:
+        if detector is None:
+            return None
+        try:
+            landmarks_norm, _ = detector.detect(img)
+        except Exception as exc:  # noqa: BLE001
+            print(f"[bbox] {detector.__class__.__name__} failed on '{image_path}': {exc}")
+            return None
+        if landmarks_norm is None:
+            return None
+        arr = np.asarray(landmarks_norm, dtype=np.float32)
+        if arr.size == 0:
+            return None
+        if arr.ndim != 2 or arr.shape[1] < 2:
+            return None
+        return arr
+
+    landmarks_norm = _detect_with(_get_mediapipe_detector())
+    fallback_used = False
+
+    if landmarks_norm is None:
+        fallback_used = True
+        landmarks_norm = _detect_with(_get_sentis_detector())
+
+    if landmarks_norm is None:
+        print(f"[bbox] Warning: no hand detected in '{image_path}'")
+        return None
+
+    xs = np.clip(landmarks_norm[:, 0], 0.0, 1.0) * max(width - 1, 0)
+    ys = np.clip(landmarks_norm[:, 1], 0.0, 1.0) * max(height - 1, 0)
+
+    xmin = int(np.floor(xs.min()))
+    xmax = int(np.ceil(xs.max()))
+    ymin = int(np.floor(ys.min()))
+    ymax = int(np.ceil(ys.max()))
+
+    if fallback_used:
+        print(f"[bbox] Fallback detector succeeded for '{image_path}'")
+
+    return xmin, ymin, xmax, ymax
+
+
+def _ensure_bboxes(
+    df: pd.DataFrame,
+    image_path_col: str,
+    *,
+    csv_source: Optional[Path] = None,
+    raw_df: Optional[pd.DataFrame] = None,
+) -> pd.Series:
+    if "bbox" in df.columns:
+        parsed = df["bbox"].apply(_parse_bbox)
+    else:
+        parsed = pd.Series(index=df.index, data=[None] * len(df), dtype="object")
+
+    missing_mask = parsed.isna()
+    if not missing_mask.any():
+        return parsed
+
+    updates_for_csv: Dict[int, str] = {}
+
+    if raw_df is not None and "bbox" not in raw_df.columns:
+        raw_df["bbox"] = ""
+
+    for idx, image_path in df.loc[missing_mask, image_path_col].items():
+        bbox = _compute_bbox_for_image(Path(image_path))
+        parsed.at[idx] = bbox
+        if raw_df is not None:
+            formatted = _bbox_to_string(bbox)
+            current = raw_df.at[idx, "bbox"] if idx in raw_df.index and "bbox" in raw_df.columns else ""
+            if formatted != current:
+                raw_df.at[idx, "bbox"] = formatted
+                updates_for_csv[idx] = formatted
+
+    if updates_for_csv and csv_source is not None:
+        raw_df.to_csv(csv_source, index=False)
+        source_label = csv_source.name if hasattr(csv_source, "name") else str(csv_source)
+        print(f"[bbox] Stored {len(updates_for_csv)} computed bounding boxes in {source_label}")
+
+    return parsed
+
+
+# ---------------------------------------------------------------------------
 # Metadata loaders
 
 def _build_archive_filename(person_no: int, age: int, gender: Optional[int], photo_no: int) -> Optional[Path]:
@@ -92,24 +256,34 @@ def load_primary_metadata() -> pd.DataFrame:
     if not PRIMARY_CSV.exists():
         raise FileNotFoundError(f"Primary CSV not found: {PRIMARY_CSV}")
 
-    df = pd.read_csv(PRIMARY_CSV)
-    df["aspect_norm"] = df["aspectOfHand"].apply(_normalise_label)
-    df = df[df["aspect_norm"].notna()]
+    raw_df = pd.read_csv(PRIMARY_CSV)
+    working_df = raw_df.copy()
 
-    df["image_path"] = df["imageName"].apply(lambda name: PRIMARY_ROOT / str(name))
-    df = df[df["image_path"].apply(Path.exists)]
+    working_df["aspect_norm"] = working_df["aspectOfHand"].apply(_normalise_label)
+    working_df = working_df[working_df["aspect_norm"].notna()]
 
-    df["gender_norm"] = df["gender"].apply(_normalise_gender)
-    df["age_norm"] = df["age"].apply(lambda x: int(x) if pd.notna(x) else pd.NA)
+    working_df["image_path"] = working_df["imageName"].apply(lambda name: PRIMARY_ROOT / str(name))
+    working_df = working_df[working_df["image_path"].apply(Path.exists)]
+
+    working_df["gender_norm"] = working_df["gender"].apply(_normalise_gender)
+    working_df["age_norm"] = working_df["age"].apply(lambda x: int(x) if pd.notna(x) else pd.NA)
+
+    working_df["bbox_tuple"] = _ensure_bboxes(
+        working_df,
+        "image_path",
+        csv_source=PRIMARY_CSV,
+        raw_df=raw_df,
+    )
 
     df_out = pd.DataFrame(
         {
             "source": "primary",
-            "user_id": df["id"].apply(lambda x: f"primary_{int(x)}"),
-            "age": df["age_norm"],
-            "gender": df["gender_norm"],
-            "aspect": df["aspect_norm"],
-            "image_path": df["image_path"].apply(Path),
+            "user_id": working_df["id"].apply(lambda x: f"primary_{int(x)}"),
+            "age": working_df["age_norm"],
+            "gender": working_df["gender_norm"],
+            "aspect": working_df["aspect_norm"],
+            "image_path": working_df["image_path"],
+            "bbox": working_df["bbox_tuple"],
         }
     )
     df_out = df_out.reset_index(drop=True)
@@ -121,14 +295,15 @@ def load_primary_metadata() -> pd.DataFrame:
 
 def load_archive_metadata() -> pd.DataFrame:
     if not ARCHIVE_CSV.exists():
-        return pd.DataFrame(columns=["source", "user_id", "age", "gender", "aspect", "image_path"])
+        return pd.DataFrame(columns=["source", "user_id", "age", "gender", "aspect", "image_path", "bbox"])
 
-    df = pd.read_csv(ARCHIVE_CSV)
-    if df.empty or "aspectOfHand" not in df.columns:
-        return pd.DataFrame(columns=["source", "user_id", "age", "gender", "aspect", "image_path"])
+    raw_df = pd.read_csv(ARCHIVE_CSV)
+    if raw_df.empty or "aspectOfHand" not in raw_df.columns:
+        return pd.DataFrame(columns=["source", "user_id", "age", "gender", "aspect", "image_path", "bbox"])
 
-    df["aspect_norm"] = df["aspectOfHand"].apply(_normalise_label)
-    df = df[df["aspect_norm"].notna()]
+    working_df = raw_df.copy()
+    working_df["aspect_norm"] = working_df["aspectOfHand"].apply(_normalise_label)
+    working_df = working_df[working_df["aspect_norm"].notna()]
 
     def resolve_path(row) -> Optional[Path]:
         try:
@@ -142,21 +317,29 @@ def load_archive_metadata() -> pd.DataFrame:
             return None
         return _build_archive_filename(person_no, age, gender, photo_no)
 
-    df["image_path"] = df.apply(resolve_path, axis=1)
-    df = df[df["image_path"].notna()]
+    working_df["image_path"] = working_df.apply(resolve_path, axis=1)
+    working_df = working_df[working_df["image_path"].notna()]
 
     gender_map = {1: "female", 2: "male"}
-    df["gender_norm"] = df["Gender"].apply(lambda g: gender_map.get(g) if pd.notna(g) else None)
-    df["age_norm"] = df["Age"].apply(lambda a: int(a) if pd.notna(a) else pd.NA)
+    working_df["gender_norm"] = working_df["Gender"].apply(lambda g: gender_map.get(g) if pd.notna(g) else None)
+    working_df["age_norm"] = working_df["Age"].apply(lambda a: int(a) if pd.notna(a) else pd.NA)
+
+    working_df["bbox_tuple"] = _ensure_bboxes(
+        working_df,
+        "image_path",
+        csv_source=ARCHIVE_CSV,
+        raw_df=raw_df,
+    )
 
     df_out = pd.DataFrame(
         {
             "source": "archive",
-            "user_id": df["Person No"].apply(lambda x: f"archive_{int(x)}"),
-            "age": df["age_norm"],
-            "gender": df["gender_norm"],
-            "aspect": df["aspect_norm"],
-            "image_path": df["image_path"].apply(Path),
+            "user_id": working_df["Person No"].apply(lambda x: f"archive_{int(x)}"),
+            "age": working_df["age_norm"],
+            "gender": working_df["gender_norm"],
+            "aspect": working_df["aspect_norm"],
+            "image_path": working_df["image_path"].apply(Path),
+            "bbox": working_df["bbox_tuple"],
         }
     )
     df_out = df_out.reset_index(drop=True)
@@ -205,6 +388,7 @@ class HandsDataset(Dataset):
             "gender": row["gender"],
             "source": row["source"],
             "image_path": image_path,
+            "bbox": row.get("bbox"),
         }
         return image, label, metadata
 

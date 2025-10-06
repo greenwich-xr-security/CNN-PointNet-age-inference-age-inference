@@ -5,7 +5,7 @@ import numpy as np
 import pandas as pd
 import torch
 import torch.nn as nn
-from PIL import Image
+from PIL import Image, ImageOps
 from sklearn.model_selection import train_test_split
 from torch.utils.data import Dataset, DataLoader
 from torchvision import models, transforms
@@ -18,7 +18,7 @@ from displayUtils import DisplayUtils
 BATCH_SIZE = 32
 EPOCHS = 40
 LR = 3e-4
-IMG_SIZE = 224
+IMG_SIZE = 260
 DEVICE = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 SEED = 42
 
@@ -50,17 +50,71 @@ class AgeDataset(Dataset):
         image_path: Path = row["image_path"]
         age = float(row["age"])
         image = Image.open(image_path).convert("RGB")
+
+        # Optional: crop to square bbox with padding if available
+        bbox = row.get("bbox")
+        if isinstance(bbox, (list, tuple)) and len(bbox) == 4:
+            try:
+                xmin, ymin, xmax, ymax = [int(v) for v in bbox]
+                if xmax > xmin and ymax > ymin:
+                    w, h = image.size
+                    # compute square around bbox center
+                    bw = xmax - xmin
+                    bh = ymax - ymin
+                    side = int(max(bw, bh))
+                    cx = (xmin + xmax) / 2.0
+                    cy = (ymin + ymax) / 2.0
+                    sq_xmin = int(np.floor(cx - side / 2.0))
+                    sq_ymin = int(np.floor(cy - side / 2.0))
+                    sq_xmax = sq_xmin + side
+                    sq_ymax = sq_ymin + side
+
+                    # compute required padding to keep crop inside image bounds
+                    pad_left = max(0, -sq_xmin)
+                    pad_top = max(0, -sq_ymin)
+                    pad_right = max(0, sq_xmax - w)
+                    pad_bottom = max(0, sq_ymax - h)
+
+                    if pad_left or pad_top or pad_right or pad_bottom:
+                        image = ImageOps.expand(
+                            image,
+                            border=(pad_left, pad_top, pad_right, pad_bottom),
+                            fill=(0, 0, 0),
+                        )
+                        # shift square bbox into padded image coords
+                        sq_xmin += pad_left
+                        sq_xmax += pad_left
+                        sq_ymin += pad_top
+                        sq_ymax += pad_top
+
+                    # final safety clamp then crop
+                    sq_xmin = max(0, sq_xmin)
+                    sq_ymin = max(0, sq_ymin)
+                    sq_xmax = max(sq_xmin + 1, min(image.size[0], sq_xmax))
+                    sq_ymax = max(sq_ymin + 1, min(image.size[1], sq_ymax))
+                    image = image.crop((sq_xmin, sq_ymin, sq_xmax, sq_ymax))
+            except Exception:
+                # If anything goes wrong with bbox handling, fall back to full image
+                pass
         if self.transform:
             image = self.transform(image)
         return image, torch.tensor(age, dtype=torch.float32)
 
 
-class ResNetAgeRegressor(nn.Module):
+class EfficientNetAgeRegressor(nn.Module):
     def __init__(self):
         super().__init__()
-        self.backbone = models.resnet18(pretrained=True)
-        num_feats = self.backbone.fc.in_features
-        self.backbone.fc = nn.Linear(num_feats, 1)
+        self.backbone = models.efficientnet_b2(pretrained=True)
+        # Replace the classifier to output a single regression value
+        if isinstance(self.backbone.classifier, nn.Sequential) and len(self.backbone.classifier) >= 2:
+            in_feats = self.backbone.classifier[-1].in_features
+            self.backbone.classifier[-1] = nn.Linear(in_feats, 1)
+        else:
+            # Fallback: handle unexpected classifier structure
+            in_feats = getattr(self.backbone.classifier, 'in_features', None)
+            if in_feats is None:
+                raise RuntimeError('Unexpected EfficientNet-B2 classifier structure')
+            self.backbone.classifier = nn.Linear(in_feats, 1)
 
     def forward(self, x):
         return self.backbone(x).squeeze(1)
@@ -100,7 +154,7 @@ train_loader = DataLoader(train_ds, batch_size=BATCH_SIZE, shuffle=True, num_wor
 test_loader = DataLoader(test_ds, batch_size=BATCH_SIZE, shuffle=False, num_workers=0)
 
 
-model = ResNetAgeRegressor().to(DEVICE)
+model = EfficientNetAgeRegressor().to(DEVICE)
 criterion = nn.MSELoss()
 optimizer = torch.optim.AdamW(model.parameters(), lr=LR)
 
@@ -145,5 +199,5 @@ for epoch in range(1, EPOCHS + 1):
     )
 
 
-torch.save(model.state_dict(), "resnet18_age_regressor.pth")
-print("Model saved to resnet18_age_regressor.pth")
+torch.save(model.state_dict(), "efficientnet_b2_age_regressor.pth")
+print("Model saved to efficientnet_b2_age_regressor.pth")
