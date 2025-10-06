@@ -99,6 +99,41 @@ class DisplayUtils:
         plt.show()
 
     @staticmethod
+    def display_with_bbox(
+        img,
+        bbox: Tuple[int, int, int, int],
+        *,
+        max_dim: int = 1080,
+        colour: Tuple[int, int, int] = (255, 255, 0),
+        thickness: int = 2,
+        title: Optional[str] = None,
+    ) -> None:
+        """Display an image with a single bounding box overlay."""
+        if bbox is None:
+            raise ValueError("bbox must not be None")
+        if len(bbox) != 4:
+            raise ValueError("bbox must be a tuple (xmin, ymin, xmax, ymax)")
+
+        xmin, ymin, xmax, ymax = [int(v) for v in bbox]
+        if xmax < xmin or ymax < ymin:
+            raise ValueError(f"bbox has invalid coordinates: {bbox}")
+
+        work_img = img.copy()
+        work_img, scale = DisplayUtils._resize_to_max(work_img, max_dim)
+        xmin_s = int(round(xmin * scale))
+        ymin_s = int(round(ymin * scale))
+        xmax_s = int(round(xmax * scale))
+        ymax_s = int(round(ymax * scale))
+        cv2.rectangle(work_img, (xmin_s, ymin_s), (xmax_s, ymax_s), colour, thickness)
+
+        plt.figure(figsize=(8, 8))
+        plt.imshow(cv2.cvtColor(work_img, cv2.COLOR_BGR2RGB))
+        plt.axis("off")
+        if title:
+            plt.title(title)
+        plt.show()
+
+    @staticmethod
     def display_regression_scatter(
         targets: Iterable[float],
         predictions: Iterable[float],
