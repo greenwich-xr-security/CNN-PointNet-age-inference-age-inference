@@ -10,6 +10,7 @@ from sklearn.model_selection import train_test_split
 from torch.utils.data import Dataset, DataLoader
 from torchvision import models, transforms
 from tqdm import tqdm
+from matplotlib import pyplot as plt
 
 from hands_dataset import load_combined_metadata
 from displayUtils import DisplayUtils
@@ -18,7 +19,7 @@ from displayUtils import DisplayUtils
 BATCH_SIZE = 32
 EPOCHS = 40
 LR = 3e-4
-IMG_SIZE = 260
+IMG_SIZE = 300
 DEVICE = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 SEED = 42
 
@@ -104,7 +105,7 @@ class AgeDataset(Dataset):
 class EfficientNetAgeRegressor(nn.Module):
     def __init__(self):
         super().__init__()
-        self.backbone = models.efficientnet_b2(pretrained=True)
+        self.backbone = models.efficientnet_b3(pretrained=True)
         # Replace the classifier to output a single regression value
         if isinstance(self.backbone.classifier, nn.Sequential) and len(self.backbone.classifier) >= 2:
             in_feats = self.backbone.classifier[-1].in_features
@@ -159,6 +160,9 @@ criterion = nn.MSELoss()
 optimizer = torch.optim.AdamW(model.parameters(), lr=LR)
 
 
+best_val_loss = float('inf')
+best_model_path = "efficientnet_b2_age_regressor.pth"
+
 for epoch in range(1, EPOCHS + 1):
     model.train()
     running_loss = 0.0
@@ -192,12 +196,37 @@ for epoch in range(1, EPOCHS + 1):
     val_mae /= max(1, len(test_loader))
 
     print(f"Epoch {epoch}: train_loss={train_loss:.4f}, val_loss={val_loss:.4f}, val_mae={val_mae:.2f}")
-    DisplayUtils.display_regression_scatter(
-        val_targets,
-        val_predictions,
-        title=f"Epoch {epoch} Age Predictions",
-    )
+
+    # Save the model and a scatter plot only if validation loss improves
+    if val_loss < best_val_loss:
+        best_val_loss = val_loss
+        torch.save(model.state_dict(), best_model_path)
+
+        # Save scatter plot without displaying
+        targets_arr = np.asarray(val_targets, dtype=float)
+        preds_arr = np.asarray(val_predictions, dtype=float)
+        if targets_arr.size > 0 and preds_arr.size > 0:
+            min_val = float(np.min([targets_arr.min(), preds_arr.min()]))
+            max_val = float(np.max([targets_arr.max(), preds_arr.max()]))
+            padding = max(1.0, 0.05 * (max_val - min_val))
+            axis_min = min_val - padding
+            axis_max = max_val + padding
+
+            plt.figure(figsize=(6, 6))
+            plt.scatter(targets_arr, preds_arr, s=20, alpha=0.6, edgecolors='none')
+            plt.plot([axis_min, axis_max], [axis_min, axis_max], 'r--', linewidth=1)
+            plt.xlabel('True Age')
+            plt.ylabel('Predicted Age')
+            plt.title(f"Epoch {epoch} Age Predictions (best so far)")
+            plt.xlim(axis_min, axis_max)
+            plt.ylim(axis_min, axis_max)
+            plt.gca().set_aspect('equal', adjustable='box')
+            plt.grid(True, linestyle='--', linewidth=0.5, alpha=0.3)
+            plot_path = f"age_val_scatter_epoch{epoch}.png"
+            plt.tight_layout()
+            plt.savefig(plot_path)
+            plt.close()
+            print(f"Saved best model to {best_model_path} and plot to {plot_path}")
 
 
-torch.save(model.state_dict(), "efficientnet_b2_age_regressor.pth")
-print("Model saved to efficientnet_b2_age_regressor.pth")
+print("Training complete. Best model saved on validation improvement.")
