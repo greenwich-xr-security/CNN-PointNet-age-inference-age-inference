@@ -17,18 +17,31 @@ from hands_dataset import get_dataset_root, load_combined_metadata, set_dataset_
 from displayUtils import DisplayUtils
 
 # --- Config -----------------------------------------------------------------
-BATCH_SIZE = 32
-EPOCHS = 40
-LR = 3e-4
-IMG_SIZE = 600
+DEFAULT_BATCH_SIZE = 32
+DEFAULT_EPOCHS = 40
+DEFAULT_LR = 3e-4
+DEFAULT_MODEL_VARIANT = "b7"
+DEFAULT_SEED = 42
 DEVICE = torch.device("cuda" if torch.cuda.is_available() else "cpu")
-SEED = 42
 
-random.seed(SEED)
-np.random.seed(SEED)
-torch.manual_seed(SEED)
-if DEVICE.type == "cuda":
-    torch.cuda.manual_seed_all(SEED)
+EFFICIENTNET_IMG_SIZES = {
+    "b0": 224,
+    "b1": 240,
+    "b2": 260,
+    "b3": 300,
+    "b4": 380,
+    "b5": 456,
+    "b6": 528,
+    "b7": 600,
+}
+
+
+def set_random_seed(seed: int) -> None:
+    random.seed(seed)
+    np.random.seed(seed)
+    torch.manual_seed(seed)
+    if DEVICE.type == "cuda":
+        torch.cuda.manual_seed_all(seed)
 
 
 def filter_metadata(df: pd.DataFrame) -> pd.DataFrame:
@@ -104,9 +117,19 @@ class AgeDataset(Dataset):
 
 
 class EfficientNetAgeRegressor(nn.Module):
-    def __init__(self):
+    def __init__(self, variant: str):
         super().__init__()
-        self.backbone = models.efficientnet_b7(pretrained=True)
+        variant = variant.lower()
+        if variant not in EFFICIENTNET_IMG_SIZES:
+            raise ValueError(f"Unsupported EfficientNet variant '{variant}'.")
+
+        model_name = f"efficientnet_{variant}"
+        if not hasattr(models, model_name):
+            raise ValueError(f"torchvision.models does not provide '{model_name}'.")
+
+        backbone_builder = getattr(models, model_name)
+        self.backbone = backbone_builder(pretrained=True)
+        self.variant = variant
         # Replace the classifier to output a single regression value
         if isinstance(self.backbone.classifier, nn.Sequential) and len(self.backbone.classifier) >= 2:
             in_feats = self.backbone.classifier[-1].in_features
@@ -115,27 +138,30 @@ class EfficientNetAgeRegressor(nn.Module):
             # Fallback: handle unexpected classifier structure
             in_feats = getattr(self.backbone.classifier, 'in_features', None)
             if in_feats is None:
-                raise RuntimeError('Unexpected EfficientNet-B7 classifier structure')
+                raise RuntimeError(f"Unexpected EfficientNet-{variant.upper()} classifier structure")
             self.backbone.classifier = nn.Linear(in_feats, 1)
 
     def forward(self, x):
         return self.backbone(x).squeeze(1)
 
 
-train_transform = transforms.Compose([
-    transforms.RandomResizedCrop(IMG_SIZE, scale=(0.7, 1.0)),
-    transforms.RandomRotation(degrees=(-180, 180)),
-    transforms.RandomHorizontalFlip(),
-    transforms.ColorJitter(brightness=0.2, contrast=0.2),
-    transforms.ToTensor(),
-    transforms.Normalize(mean=[0.485, 0.456, 0.406], std=[0.229, 0.224, 0.225]),
-])
+def build_transforms(img_size: int):
+    train_transform = transforms.Compose([
+        transforms.RandomResizedCrop(img_size, scale=(0.7, 1.0)),
+        transforms.RandomRotation(degrees=(-180, 180)),
+        transforms.RandomHorizontalFlip(),
+        transforms.ColorJitter(brightness=0.2, contrast=0.2),
+        transforms.ToTensor(),
+        transforms.Normalize(mean=[0.485, 0.456, 0.406], std=[0.229, 0.224, 0.225]),
+    ])
 
-test_transform = transforms.Compose([
-    transforms.Resize((IMG_SIZE, IMG_SIZE)),
-    transforms.ToTensor(),
-    transforms.Normalize(mean=[0.485, 0.456, 0.406], std=[0.229, 0.224, 0.225]),
-])
+    test_transform = transforms.Compose([
+        transforms.Resize((img_size, img_size)),
+        transforms.ToTensor(),
+        transforms.Normalize(mean=[0.485, 0.456, 0.406], std=[0.229, 0.224, 0.225]),
+    ])
+
+    return train_transform, test_transform
 
 
 def main() -> None:
@@ -152,7 +178,49 @@ def main() -> None:
         default=".",
         help="Directory where checkpoints and plots will be saved.",
     )
+    parser.add_argument(
+        "--model",
+        type=str,
+        default=DEFAULT_MODEL_VARIANT,
+        choices=sorted(EFFICIENTNET_IMG_SIZES.keys()),
+        help="EfficientNet variant to use (default: b7).",
+    )
+    parser.add_argument(
+        "--img-size",
+        type=int,
+        default=None,
+        help="Override the input resolution. Defaults to the canonical size for the chosen model.",
+    )
+    parser.add_argument(
+        "--batch-size",
+        type=int,
+        default=DEFAULT_BATCH_SIZE,
+        help="Mini-batch size for training (default: 32).",
+    )
+    parser.add_argument(
+        "--epochs",
+        type=int,
+        default=DEFAULT_EPOCHS,
+        help="Number of training epochs (default: 40).",
+    )
+    parser.add_argument(
+        "--seed",
+        type=int,
+        default=DEFAULT_SEED,
+        help="Seed for RNGs, ensuring reproducibility (default: 42).",
+    )
+    parser.add_argument(
+        "--lr",
+        type=float,
+        default=DEFAULT_LR,
+        help="Learning rate for AdamW optimizer (default: 3e-4).",
+    )
     args = parser.parse_args()
+
+    set_random_seed(args.seed)
+    model_variant = args.model.lower()
+    default_size = EFFICIENTNET_IMG_SIZES[model_variant]
+    img_size = args.img_size or default_size
 
     if args.data_root:
         set_dataset_root(args.data_root)
@@ -161,9 +229,11 @@ def main() -> None:
     output_dir = Path(args.output_dir).expanduser()
     output_dir.mkdir(parents=True, exist_ok=True)
 
+    train_transform, test_transform = build_transforms(img_size)
+
     metadata = filter_metadata(load_combined_metadata(root=active_root))
     user_ids = metadata["user_id"].unique()
-    train_ids, test_ids = train_test_split(user_ids, test_size=0.2, random_state=SEED)
+    train_ids, test_ids = train_test_split(user_ids, test_size=0.2, random_state=args.seed)
     train_meta = metadata[metadata["user_id"].isin(train_ids)]
     test_meta = metadata[metadata["user_id"].isin(test_ids)]
 
@@ -171,16 +241,18 @@ def main() -> None:
         f"Using dataset root: {active_root}\n"
         f"Saving artifacts to: {output_dir}\n"
         f"Train users: {train_meta['user_id'].nunique()} | Train images: {len(train_meta)}\n"
-        f"Test users:  {test_meta['user_id'].nunique()} | Test images:  {len(test_meta)}"
+        f"Test users:  {test_meta['user_id'].nunique()} | Test images:  {len(test_meta)}\n"
+        f"Model: EfficientNet-{model_variant.upper()} | Image size: {img_size} | Batch size: {args.batch_size}\n"
+        f"Epochs: {args.epochs} | Learning rate: {args.lr:.2e} | Seed: {args.seed}"
     )
 
     train_ds = AgeDataset(train_meta, transform=train_transform)
     test_ds = AgeDataset(test_meta, transform=test_transform)
 
-    train_loader = DataLoader(train_ds, batch_size=BATCH_SIZE, shuffle=True, num_workers=0)
-    test_loader = DataLoader(test_ds, batch_size=BATCH_SIZE, shuffle=False, num_workers=0)
+    train_loader = DataLoader(train_ds, batch_size=args.batch_size, shuffle=True, num_workers=0)
+    test_loader = DataLoader(test_ds, batch_size=args.batch_size, shuffle=False, num_workers=0)
 
-    model = EfficientNetAgeRegressor()
+    model = EfficientNetAgeRegressor(model_variant)
     if DEVICE.type == "cuda":
         gpu_count = torch.cuda.device_count()
         if gpu_count > 1:
@@ -188,15 +260,15 @@ def main() -> None:
             model = nn.DataParallel(model)
     model = model.to(DEVICE)
     criterion = nn.L1Loss()
-    optimizer = torch.optim.AdamW(model.parameters(), lr=LR)
+    optimizer = torch.optim.AdamW(model.parameters(), lr=args.lr)
 
     best_val_mae = float("inf")
-    best_model_path = output_dir / "efficientnet_b7_age_regressor.pth"
+    best_model_path = output_dir / f"efficientnet_{model_variant}_age_regressor.pth"
 
-    for epoch in range(1, EPOCHS + 1):
+    for epoch in range(1, args.epochs + 1):
         model.train()
         running_loss = 0.0
-        for images, ages in tqdm(train_loader, desc=f"Epoch {epoch}/{EPOCHS}"):
+        for images, ages in tqdm(train_loader, desc=f"Epoch {epoch}/{args.epochs}"):
             images, ages = images.to(DEVICE), ages.to(DEVICE)
             optimizer.zero_grad()
             preds = model(images)
