@@ -6,8 +6,9 @@ training or inference scripts.
 """
 from __future__ import annotations
 
+import os
 from pathlib import Path
-from typing import Dict, Optional, Tuple
+from typing import Dict, Optional, Tuple, Union
 
 import cv2
 import numpy as np
@@ -20,14 +21,31 @@ from handLandmarks.handLandmarksDetection import (
     SentisHandLandmarkDetector,
 )
 
-# Base directory for all datasets
-ROOT = Path(r"C:\Users\Staff\OneDrive - University of Greenwich\HandsDatasets")
+# Base directory (can be overridden via env var or function argument)
+_DEFAULT_ROOT = Path(r"C:\Users\Staff\OneDrive - University of Greenwich\HandsDatasets")
+_ENV_VAR_NAME = "HANDS_DATASETS_ROOT"
 
-# Subdirectories and CSV files relative to ROOT
-PRIMARY_ROOT = ROOT / "11kHands" / "Hands"
-PRIMARY_CSV = ROOT / "11kHands" / "HandInfo.csv"
-ARCHIVE_ROOT = ROOT / "archive" / "Photos"
-ARCHIVE_CSV = ROOT / "archive" / "annotated_dataset_details.csv"
+PathLike = Union[str, Path]
+
+_DATA_ROOT = Path(os.environ.get(_ENV_VAR_NAME, _DEFAULT_ROOT))
+
+
+def set_dataset_root(root: PathLike) -> Path:
+    """Override the dataset root used by loader helpers."""
+    global _DATA_ROOT
+    _DATA_ROOT = Path(root).expanduser()
+    return _DATA_ROOT
+
+
+def get_dataset_root() -> Path:
+    """Return the currently configured dataset root."""
+    return _DATA_ROOT
+
+
+def _resolve_root(root: Optional[PathLike] = None) -> Path:
+    if root is None:
+        return get_dataset_root()
+    return Path(root).expanduser()
 
 # ---------------------------------------------------------------------------
 # Label normalisation helpers
@@ -239,30 +257,41 @@ def _ensure_bboxes(
 # ---------------------------------------------------------------------------
 # Metadata loaders
 
-def _build_archive_filename(person_no: int, age: int, gender: Optional[int], photo_no: int) -> Optional[Path]:
+def _build_archive_filename(
+    person_no: int,
+    age: int,
+    gender: Optional[int],
+    photo_no: int,
+    *,
+    archive_root: Path,
+) -> Optional[Path]:
     parts = [str(person_no), str(age)]
     if gender is not None:
         parts.append(str(gender))
     parts.append(str(photo_no))
     stem = "_".join(parts)
     for ext in (".jpg", ".png", ".jpeg"):
-        candidate = ARCHIVE_ROOT / f"{stem}{ext}"
+        candidate = archive_root / f"{stem}{ext}"
         if candidate.is_file():
             return candidate
     return None
 
 
-def load_primary_metadata() -> pd.DataFrame:
-    if not PRIMARY_CSV.exists():
-        raise FileNotFoundError(f"Primary CSV not found: {PRIMARY_CSV}")
+def load_primary_metadata(root: Optional[PathLike] = None) -> pd.DataFrame:
+    dataset_root = _resolve_root(root)
+    primary_root = dataset_root / "11kHands" / "Hands"
+    primary_csv = dataset_root / "11kHands" / "HandInfo.csv"
 
-    raw_df = pd.read_csv(PRIMARY_CSV)
+    if not primary_csv.exists():
+        raise FileNotFoundError(f"Primary CSV not found: {primary_csv}")
+
+    raw_df = pd.read_csv(primary_csv)
     working_df = raw_df.copy()
 
     working_df["aspect_norm"] = working_df["aspectOfHand"].apply(_normalise_label)
     working_df = working_df[working_df["aspect_norm"].notna()]
 
-    working_df["image_path"] = working_df["imageName"].apply(lambda name: PRIMARY_ROOT / str(name))
+    working_df["image_path"] = working_df["imageName"].apply(lambda name: primary_root / str(name))
     working_df = working_df[working_df["image_path"].apply(Path.exists)]
 
     working_df["gender_norm"] = working_df["gender"].apply(_normalise_gender)
@@ -271,7 +300,7 @@ def load_primary_metadata() -> pd.DataFrame:
     working_df["bbox_tuple"] = _ensure_bboxes(
         working_df,
         "image_path",
-        csv_source=PRIMARY_CSV,
+        csv_source=primary_csv,
         raw_df=raw_df,
     )
 
@@ -293,11 +322,15 @@ def load_primary_metadata() -> pd.DataFrame:
     return df_out
 
 
-def load_archive_metadata() -> pd.DataFrame:
-    if not ARCHIVE_CSV.exists():
+def load_archive_metadata(root: Optional[PathLike] = None) -> pd.DataFrame:
+    dataset_root = _resolve_root(root)
+    archive_root = dataset_root / "archive" / "Photos"
+    archive_csv = dataset_root / "archive" / "annotated_dataset_details.csv"
+
+    if not archive_csv.exists():
         return pd.DataFrame(columns=["source", "user_id", "age", "gender", "aspect", "image_path", "bbox"])
 
-    raw_df = pd.read_csv(ARCHIVE_CSV)
+    raw_df = pd.read_csv(archive_csv)
     if raw_df.empty or "aspectOfHand" not in raw_df.columns:
         return pd.DataFrame(columns=["source", "user_id", "age", "gender", "aspect", "image_path", "bbox"])
 
@@ -315,7 +348,13 @@ def load_archive_metadata() -> pd.DataFrame:
             photo_no = int(row.get("Photo No"))
         except (TypeError, ValueError):
             return None
-        return _build_archive_filename(person_no, age, gender, photo_no)
+        return _build_archive_filename(
+            person_no,
+            age,
+            gender,
+            photo_no,
+            archive_root=archive_root,
+        )
 
     working_df["image_path"] = working_df.apply(resolve_path, axis=1)
     working_df = working_df[working_df["image_path"].notna()]
@@ -327,7 +366,7 @@ def load_archive_metadata() -> pd.DataFrame:
     working_df["bbox_tuple"] = _ensure_bboxes(
         working_df,
         "image_path",
-        csv_source=ARCHIVE_CSV,
+        csv_source=archive_csv,
         raw_df=raw_df,
     )
 
@@ -349,9 +388,9 @@ def load_archive_metadata() -> pd.DataFrame:
     return df_out
 
 
-def load_combined_metadata() -> pd.DataFrame:
-    primary_df = load_primary_metadata()
-    archive_df = load_archive_metadata()
+def load_combined_metadata(root: Optional[PathLike] = None) -> pd.DataFrame:
+    primary_df = load_primary_metadata(root=root)
+    archive_df = load_archive_metadata(root=root)
     combined = pd.concat([primary_df, archive_df], ignore_index=True)
     combined = combined.drop_duplicates(subset="image_path")
     return combined.reset_index(drop=True)
@@ -394,6 +433,19 @@ class HandsDataset(Dataset):
 
 
 if __name__ == "__main__":
-    combined = load_combined_metadata()
+    import argparse
+
+    parser = argparse.ArgumentParser(description="Inspect combined hands dataset metadata.")
+    parser.add_argument(
+        "--root",
+        type=str,
+        default=None,
+        help=f"Path to the dataset root (overrides env var {_ENV_VAR_NAME}).",
+    )
+    args = parser.parse_args()
+
+    combined = load_combined_metadata(root=args.root)
+    active_root = _resolve_root(args.root)
+    print(f"Using dataset root: {active_root}")
     print(f"Combined samples: {len(combined)}")
     print(combined.groupby(["source", "aspect"]).size())

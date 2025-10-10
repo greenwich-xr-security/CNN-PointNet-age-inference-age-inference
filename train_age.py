@@ -1,3 +1,4 @@
+import argparse
 import random
 from pathlib import Path
 
@@ -12,7 +13,7 @@ from torchvision import models, transforms
 from tqdm import tqdm
 from matplotlib import pyplot as plt
 
-from hands_dataset import load_combined_metadata
+from hands_dataset import get_dataset_root, load_combined_metadata, set_dataset_root
 from displayUtils import DisplayUtils
 
 # --- Config -----------------------------------------------------------------
@@ -137,96 +138,114 @@ test_transform = transforms.Compose([
 ])
 
 
-metadata = filter_metadata(load_combined_metadata())
-user_ids = metadata["user_id"].unique()
-train_ids, test_ids = train_test_split(user_ids, test_size=0.2, random_state=SEED)
-train_meta = metadata[metadata["user_id"].isin(train_ids)]
-test_meta = metadata[metadata["user_id"].isin(test_ids)]
+def main() -> None:
+    parser = argparse.ArgumentParser(description="Train EfficientNet hand age regressor.")
+    parser.add_argument(
+        "--data-root",
+        type=str,
+        default=None,
+        help="Path to the dataset root directory. Overrides the default or env var.",
+    )
+    parser.add_argument(
+        "--output-dir",
+        type=str,
+        default=".",
+        help="Directory where checkpoints and plots will be saved.",
+    )
+    args = parser.parse_args()
 
-print(
-    f"Train users: {train_meta['user_id'].nunique()} | Train images: {len(train_meta)}\n"
-    f"Test users:  {test_meta['user_id'].nunique()} | Test images:  {len(test_meta)}"
-)
+    if args.data_root:
+        set_dataset_root(args.data_root)
+    active_root = get_dataset_root()
 
-train_ds = AgeDataset(train_meta, transform=train_transform)
-test_ds = AgeDataset(test_meta, transform=test_transform)
+    output_dir = Path(args.output_dir).expanduser()
+    output_dir.mkdir(parents=True, exist_ok=True)
 
-train_loader = DataLoader(train_ds, batch_size=BATCH_SIZE, shuffle=True, num_workers=0)
-test_loader = DataLoader(test_ds, batch_size=BATCH_SIZE, shuffle=False, num_workers=0)
+    metadata = filter_metadata(load_combined_metadata(root=active_root))
+    user_ids = metadata["user_id"].unique()
+    train_ids, test_ids = train_test_split(user_ids, test_size=0.2, random_state=SEED)
+    train_meta = metadata[metadata["user_id"].isin(train_ids)]
+    test_meta = metadata[metadata["user_id"].isin(test_ids)]
 
+    print(
+        f"Using dataset root: {active_root}\n"
+        f"Saving artifacts to: {output_dir}\n"
+        f"Train users: {train_meta['user_id'].nunique()} | Train images: {len(train_meta)}\n"
+        f"Test users:  {test_meta['user_id'].nunique()} | Test images:  {len(test_meta)}"
+    )
 
-model = EfficientNetAgeRegressor().to(DEVICE)
-criterion = nn.MSELoss()
-optimizer = torch.optim.AdamW(model.parameters(), lr=LR)
+    train_ds = AgeDataset(train_meta, transform=train_transform)
+    test_ds = AgeDataset(test_meta, transform=test_transform)
 
+    train_loader = DataLoader(train_ds, batch_size=BATCH_SIZE, shuffle=True, num_workers=0)
+    test_loader = DataLoader(test_ds, batch_size=BATCH_SIZE, shuffle=False, num_workers=0)
 
-best_val_loss = float('inf')
-best_model_path = "efficientnet_b2_age_regressor.pth"
+    model = EfficientNetAgeRegressor().to(DEVICE)
+    criterion = nn.L1Loss()
+    optimizer = torch.optim.AdamW(model.parameters(), lr=LR)
 
-for epoch in range(1, EPOCHS + 1):
-    model.train()
-    running_loss = 0.0
-    for images, ages in tqdm(train_loader, desc=f"Epoch {epoch}/{EPOCHS}"):
-        images, ages = images.to(DEVICE), ages.to(DEVICE)
-        optimizer.zero_grad()
-        preds = model(images)
-        loss = criterion(preds, ages)
-        loss.backward()
-        optimizer.step()
-        running_loss += loss.item()
+    best_val_mae = float("inf")
+    best_model_path = output_dir / "efficientnet_b2_age_regressor.pth"
 
-    train_loss = running_loss / max(1, len(train_loader))
-
-    model.eval()
-    val_loss = 0.0
-    val_mae = 0.0
-    val_targets = []
-    val_predictions = []
-    with torch.no_grad():
-        for images, ages in test_loader:
+    for epoch in range(1, EPOCHS + 1):
+        model.train()
+        running_loss = 0.0
+        for images, ages in tqdm(train_loader, desc=f"Epoch {epoch}/{EPOCHS}"):
             images, ages = images.to(DEVICE), ages.to(DEVICE)
+            optimizer.zero_grad()
             preds = model(images)
             loss = criterion(preds, ages)
-            val_loss += loss.item()
-            val_mae += torch.mean(torch.abs(preds - ages)).item()
-            val_targets.extend(ages.detach().cpu().tolist())
-            val_predictions.extend(preds.detach().cpu().tolist())
+            loss.backward()
+            optimizer.step()
+            running_loss += loss.item()
 
-    val_loss /= max(1, len(test_loader))
-    val_mae /= max(1, len(test_loader))
+        train_mae = running_loss / max(1, len(train_loader))
 
-    print(f"Epoch {epoch}: train_loss={train_loss:.4f}, val_loss={val_loss:.4f}, val_mae={val_mae:.2f}")
+        model.eval()
+        val_mae = 0.0
+        val_targets = []
+        val_predictions = []
+        with torch.no_grad():
+            for images, ages in test_loader:
+                images, ages = images.to(DEVICE), ages.to(DEVICE)
+                preds = model(images)
+                val_mae += torch.mean(torch.abs(preds - ages)).item()
+                val_targets.extend(ages.detach().cpu().tolist())
+                val_predictions.extend(preds.detach().cpu().tolist())
 
-    # Save the model and a scatter plot only if validation loss improves
-    if val_loss < best_val_loss:
-        best_val_loss = val_loss
-        torch.save(model.state_dict(), best_model_path)
+        val_mae /= max(1, len(test_loader))
 
-        # Save scatter plot without displaying
-        targets_arr = np.asarray(val_targets, dtype=float)
-        preds_arr = np.asarray(val_predictions, dtype=float)
-        if targets_arr.size > 0 and preds_arr.size > 0:
-            min_val = float(np.min([targets_arr.min(), preds_arr.min()]))
-            max_val = float(np.max([targets_arr.max(), preds_arr.max()]))
-            padding = max(1.0, 0.05 * (max_val - min_val))
-            axis_min = min_val - padding
-            axis_max = max_val + padding
+        print(f"Epoch {epoch}: train_mae={train_mae:.4f}, val_mae={val_mae:.4f}")
 
-            plt.figure(figsize=(6, 6))
-            plt.scatter(targets_arr, preds_arr, s=20, alpha=0.6, edgecolors='none')
-            plt.plot([axis_min, axis_max], [axis_min, axis_max], 'r--', linewidth=1)
-            plt.xlabel('True Age')
-            plt.ylabel('Predicted Age')
-            plt.title(f"Epoch {epoch} Age Predictions (best so far)")
-            plt.xlim(axis_min, axis_max)
-            plt.ylim(axis_min, axis_max)
-            plt.gca().set_aspect('equal', adjustable='box')
-            plt.grid(True, linestyle='--', linewidth=0.5, alpha=0.3)
-            plot_path = f"age_val_scatter_epoch{epoch}.png"
-            plt.tight_layout()
-            plt.savefig(plot_path)
-            plt.close()
-            print(f"Saved best model to {best_model_path} and plot to {plot_path}")
+        # Save the model and a scatter plot only if validation loss improves
+        if val_mae < best_val_mae:
+            best_val_mae = val_mae
+            torch.save(model.state_dict(), best_model_path)
+
+            # Save scatter plot without displaying
+            targets_arr = np.asarray(val_targets, dtype=float)
+            preds_arr = np.asarray(val_predictions, dtype=float)
+            if targets_arr.size > 0 and preds_arr.size > 0:
+                axis_min, axis_max = 0.0, 70.0
+
+                plt.figure(figsize=(6, 6))
+                plt.scatter(targets_arr, preds_arr, s=20, alpha=0.6, edgecolors="none")
+                plt.plot([axis_min, axis_max], [axis_min, axis_max], "r--", linewidth=1)
+                plt.xlabel("True Age")
+                plt.ylabel("Predicted Age")
+                plt.title(f"Epoch {epoch} Age Predictions (best so far)")
+                plt.xlim(axis_min, axis_max)
+                plt.ylim(axis_min, axis_max)
+                plt.gca().set_aspect("equal", adjustable="box")
+                plt.grid(True, linestyle="--", linewidth=0.5, alpha=0.3)
+                plot_path = output_dir / f"age_val_scatter_epoch{epoch}.png"
+                plt.tight_layout()
+                plt.savefig(plot_path)
+                plt.close()
+                print(f"Saved best model to {best_model_path} (val_mae={val_mae:.4f}) and plot to {plot_path}")
+
+    print("Training complete. Best model saved on validation improvement.")
 
 
-print("Training complete. Best model saved on validation improvement.")
+if __name__ == "__main__":
+    main()
