@@ -20,7 +20,7 @@ from displayUtils import DisplayUtils
 BATCH_SIZE = 32
 EPOCHS = 40
 LR = 3e-4
-IMG_SIZE = 300
+IMG_SIZE = 600
 DEVICE = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 SEED = 42
 
@@ -106,7 +106,7 @@ class AgeDataset(Dataset):
 class EfficientNetAgeRegressor(nn.Module):
     def __init__(self):
         super().__init__()
-        self.backbone = models.efficientnet_b3(pretrained=True)
+        self.backbone = models.efficientnet_b7(pretrained=True)
         # Replace the classifier to output a single regression value
         if isinstance(self.backbone.classifier, nn.Sequential) and len(self.backbone.classifier) >= 2:
             in_feats = self.backbone.classifier[-1].in_features
@@ -115,7 +115,7 @@ class EfficientNetAgeRegressor(nn.Module):
             # Fallback: handle unexpected classifier structure
             in_feats = getattr(self.backbone.classifier, 'in_features', None)
             if in_feats is None:
-                raise RuntimeError('Unexpected EfficientNet-B2 classifier structure')
+                raise RuntimeError('Unexpected EfficientNet-B7 classifier structure')
             self.backbone.classifier = nn.Linear(in_feats, 1)
 
     def forward(self, x):
@@ -180,12 +180,18 @@ def main() -> None:
     train_loader = DataLoader(train_ds, batch_size=BATCH_SIZE, shuffle=True, num_workers=0)
     test_loader = DataLoader(test_ds, batch_size=BATCH_SIZE, shuffle=False, num_workers=0)
 
-    model = EfficientNetAgeRegressor().to(DEVICE)
+    model = EfficientNetAgeRegressor()
+    if DEVICE.type == "cuda":
+        gpu_count = torch.cuda.device_count()
+        if gpu_count > 1:
+            print(f"Using {gpu_count} GPUs via DataParallel.")
+            model = nn.DataParallel(model)
+    model = model.to(DEVICE)
     criterion = nn.L1Loss()
     optimizer = torch.optim.AdamW(model.parameters(), lr=LR)
 
     best_val_mae = float("inf")
-    best_model_path = output_dir / "efficientnet_b2_age_regressor.pth"
+    best_model_path = output_dir / "efficientnet_b7_age_regressor.pth"
 
     for epoch in range(1, EPOCHS + 1):
         model.train()
@@ -220,7 +226,8 @@ def main() -> None:
         # Save the model and a scatter plot only if validation loss improves
         if val_mae < best_val_mae:
             best_val_mae = val_mae
-            torch.save(model.state_dict(), best_model_path)
+            model_to_save = model.module if isinstance(model, nn.DataParallel) else model
+            torch.save(model_to_save.state_dict(), best_model_path)
 
             # Save scatter plot without displaying
             targets_arr = np.asarray(val_targets, dtype=float)
