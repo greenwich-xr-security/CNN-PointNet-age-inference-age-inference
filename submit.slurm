@@ -10,4 +10,11 @@
 module load www-proxy                # Load www-proxy for internet access (seemed required)
 module load CUDA                     # Load CUDA module
 
-python CNN-age-inference/train_age.py --data-root"/projects/greenwich-xr-security/HandsDatasets" 
+python train_age.py \
+    --data-root "/projects/greenwich-xr-security/HandsDatasets" \
+    --output-dir "${SLURM_SUBMIT_DIR:-.}/runs/${SLURM_JOB_ID:-manual}" \
+    --model b7 \
+    --batch-size 16 \
+    --epochs 40 \
+    --lr 3e-4 \
+    --seed 42
