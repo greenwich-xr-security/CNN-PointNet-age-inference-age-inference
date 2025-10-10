@@ -12,7 +12,7 @@ module load CUDA                     # Load CUDA module
 
 python train_age.py \
     --data-root "/projects/greenwich-xr-security/HandsDatasets" \
-    --output-dir "${SLURM_SUBMIT_DIR:-.}/runs/${SLURM_JOB_ID:-manual}" \
+    --output-dir "${SLURM_SUBMIT_DIR:-.}/runs/test" \
     --model b7 \
     --batch-size 16 \
     --epochs 40 \
