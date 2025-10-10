@@ -1,0 +1,14 @@
+# Ignore generated images
+*.png
+*.jpg
+*.jpeg
+*.gif
+*.bmp
+*.tiff
+*.svg
+
+# Ignore cache artifacts
+__pycache__/
+*.py[cod]
+*.cache/
+*.tmp
