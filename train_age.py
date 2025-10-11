@@ -1,8 +1,6 @@
 import argparse
-import os
 import random
 from pathlib import Path
-from typing import Optional
 
 import numpy as np
 import pandas as pd
@@ -17,6 +15,8 @@ from matplotlib import pyplot as plt
 
 from hands_dataset import get_dataset_root, load_combined_metadata, set_dataset_root
 from displayUtils import DisplayUtils
+
+# Example (Windows): python train_age.py --data-root "C:\Users\Staff\OneDrive - University of Greenwich\HandsDatasets" --output-dir runs\b4_efficientnet --model b4 --img-size 380 --batch-size 32 --epochs 40 --seed 42 --lr 0.0003
 
 # --- Config -----------------------------------------------------------------
 DEFAULT_BATCH_SIZE = 32
@@ -37,22 +37,6 @@ EFFICIENTNET_IMG_SIZES = {
     "b7": 600,
 }
 
-LOCAL_TORCH_HOME = Path(__file__).resolve().parent / "pretrained_models_cache"
-
-
-def ensure_local_torch_home() -> Path:
-    """Ensure torchvision uses the project-local cache for pretrained weights."""
-    torch_home = Path(os.environ.get("TORCH_HOME", LOCAL_TORCH_HOME))
-    torch_home.mkdir(parents=True, exist_ok=True)
-    os.environ["TORCH_HOME"] = str(torch_home)
-    return torch_home
-
-
-TORCH_HOME_PATH = ensure_local_torch_home()
-CHECKPOINTS_DIR = TORCH_HOME_PATH / "hub" / "checkpoints"
-CHECKPOINTS_DIR.mkdir(parents=True, exist_ok=True)
-
-
 def get_default_efficientnet_weights(variant: str):
     """Resolve the torchvision weights enum for the requested EfficientNet variant."""
     weights_enum_name = f"EfficientNet_{variant.upper()}_Weights"
@@ -66,32 +50,6 @@ def get_default_efficientnet_weights(variant: str):
         return next(iter(weights_enum))
     except TypeError:
         return None
-
-
-def get_local_weights_path(variant: str) -> Optional[Path]:
-    """Return the expected local checkpoint path for the EfficientNet variant."""
-    weights = get_default_efficientnet_weights(variant)
-    if weights is None:
-        return None
-    filename = weights.meta.get("file", f"efficientnet_{variant}.pth")
-    return CHECKPOINTS_DIR / filename
-
-
-def ensure_pretrained_weights_available(variant: str) -> Path:
-    """Validate that the EfficientNet weights are cached locally; instruct if missing."""
-    weights = get_default_efficientnet_weights(variant)
-    if weights is None:
-        # Unable to locate weight metadata; skip strict validation.
-        return CHECKPOINTS_DIR / f"efficientnet_{variant}.pth"
-    weights_path = get_local_weights_path(variant)
-    if weights_path is None:
-        return CHECKPOINTS_DIR / f"efficientnet_{variant}.pth"
-    if not weights_path.exists():
-        raise FileNotFoundError(
-            f"Missing EfficientNet-{variant.upper()} pretrained weights at '{weights_path}'. "
-            "Run `python preload_all_models.py` to download them before training."
-        )
-    return weights_path
 
 
 def set_random_seed(seed: int) -> None:
@@ -186,7 +144,6 @@ class EfficientNetAgeRegressor(nn.Module):
             raise ValueError(f"torchvision.models does not provide '{model_name}'.")
 
         backbone_builder = getattr(models, model_name)
-        ensure_pretrained_weights_available(variant)
 
         weights = get_default_efficientnet_weights(variant)
         try:
