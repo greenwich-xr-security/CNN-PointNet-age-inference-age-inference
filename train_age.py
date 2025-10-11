@@ -285,10 +285,10 @@ def main() -> None:
             print(f"Using {gpu_count} GPUs via DataParallel.")
             model = nn.DataParallel(model)
     model = model.to(DEVICE)
-    criterion = nn.L1Loss()
+    criterion = nn.MSELoss()
     optimizer = torch.optim.AdamW(model.parameters(), lr=args.lr)
 
-    best_val_mae = float("inf")
+    best_val_mse = float("inf")
     best_model_path = output_dir / f"efficientnet_{model_variant}_age_regressor.pth"
 
     for epoch in range(1, args.epochs + 1):
@@ -303,27 +303,27 @@ def main() -> None:
             optimizer.step()
             running_loss += loss.item()
 
-        train_mae = running_loss / max(1, len(train_loader))
+        train_mse = running_loss / max(1, len(train_loader))
 
         model.eval()
-        val_mae = 0.0
+        val_mse = 0.0
         val_targets = []
         val_predictions = []
         with torch.no_grad():
             for images, ages in test_loader:
                 images, ages = images.to(DEVICE), ages.to(DEVICE)
                 preds = model(images)
-                val_mae += torch.mean(torch.abs(preds - ages)).item()
+                val_mse += torch.mean((preds - ages) ** 2).item()
                 val_targets.extend(ages.detach().cpu().tolist())
                 val_predictions.extend(preds.detach().cpu().tolist())
 
-        val_mae /= max(1, len(test_loader))
+        val_mse /= max(1, len(test_loader))
 
-        print(f"Epoch {epoch}: train_mae={train_mae:.4f}, val_mae={val_mae:.4f}")
+        print(f"Epoch {epoch}: train_mse={train_mse:.4f}, val_mse={val_mse:.4f}")
 
         # Save the model and a scatter plot only if validation loss improves
-        if val_mae < best_val_mae:
-            best_val_mae = val_mae
+        if val_mse < best_val_mse:
+            best_val_mse = val_mse
             model_to_save = model.module if isinstance(model, nn.DataParallel) else model
             torch.save(model_to_save.state_dict(), best_model_path)
 
@@ -347,7 +347,7 @@ def main() -> None:
                 plt.tight_layout()
                 plt.savefig(plot_path)
                 plt.close()
-                print(f"Saved best model to {best_model_path} (val_mae={val_mae:.4f}) and plot to {plot_path}")
+                print(f"Saved best model to {best_model_path} (val_mse={val_mse:.4f}) and plot to {plot_path}")
 
     print("Training complete. Best model saved on validation improvement.")
 
