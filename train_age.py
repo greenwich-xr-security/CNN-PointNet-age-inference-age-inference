@@ -285,15 +285,17 @@ def main() -> None:
             print(f"Using {gpu_count} GPUs via DataParallel.")
             model = nn.DataParallel(model)
     model = model.to(DEVICE)
-    criterion = nn.MSELoss()
+    criterion = nn.SmoothL1Loss()
     optimizer = torch.optim.AdamW(model.parameters(), lr=args.lr)
 
-    best_val_mse = float("inf")
+    best_val_loss = float("inf")
     best_model_path = output_dir / f"efficientnet_{model_variant}_age_regressor.pth"
 
     for epoch in range(1, args.epochs + 1):
         model.train()
         running_loss = 0.0
+        running_mae = 0.0
+        running_mse = 0.0
         for images, ages in tqdm(train_loader, desc=f"Epoch {epoch}/{args.epochs}"):
             images, ages = images.to(DEVICE), ages.to(DEVICE)
             optimizer.zero_grad()
@@ -302,10 +304,19 @@ def main() -> None:
             loss.backward()
             optimizer.step()
             running_loss += loss.item()
+            mae = torch.mean(torch.abs(preds - ages)).item()
+            mse = torch.mean((preds - ages) ** 2).item()
+            running_mae += mae
+            running_mse += mse
 
-        train_mse = running_loss / max(1, len(train_loader))
+        denom = max(1, len(train_loader))
+        train_loss = running_loss / denom
+        train_mae = running_mae / denom
+        train_mse = running_mse / denom
 
         model.eval()
+        val_loss = 0.0
+        val_mae = 0.0
         val_mse = 0.0
         val_targets = []
         val_predictions = []
@@ -313,17 +324,27 @@ def main() -> None:
             for images, ages in test_loader:
                 images, ages = images.to(DEVICE), ages.to(DEVICE)
                 preds = model(images)
+                batch_loss = criterion(preds, ages).item()
+                val_loss += batch_loss
+                val_mae += torch.mean(torch.abs(preds - ages)).item()
                 val_mse += torch.mean((preds - ages) ** 2).item()
                 val_targets.extend(ages.detach().cpu().tolist())
                 val_predictions.extend(preds.detach().cpu().tolist())
 
-        val_mse /= max(1, len(test_loader))
+        denom = max(1, len(test_loader))
+        val_loss /= denom
+        val_mae /= denom
+        val_mse /= denom
 
-        print(f"Epoch {epoch}: train_mse={train_mse:.4f}, val_mse={val_mse:.4f}")
+        print(
+            f"Epoch {epoch}: "
+            f"train_loss={train_loss:.4f}, train_mae={train_mae:.4f}, train_mse={train_mse:.4f} | "
+            f"val_loss={val_loss:.4f}, val_mae={val_mae:.4f}, val_mse={val_mse:.4f}"
+        )
 
         # Save the model and a scatter plot only if validation loss improves
-        if val_mse < best_val_mse:
-            best_val_mse = val_mse
+        if val_loss < best_val_loss:
+            best_val_loss = val_loss
             model_to_save = model.module if isinstance(model, nn.DataParallel) else model
             torch.save(model_to_save.state_dict(), best_model_path)
 
@@ -347,7 +368,7 @@ def main() -> None:
                 plt.tight_layout()
                 plt.savefig(plot_path)
                 plt.close()
-                print(f"Saved best model to {best_model_path} (val_mse={val_mse:.4f}) and plot to {plot_path}")
+                print(f"Saved best model to {best_model_path} (val_loss={val_loss:.4f}) and plot to {plot_path}")
 
     print("Training complete. Best model saved on validation improvement.")
 
