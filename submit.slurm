@@ -12,12 +12,20 @@ set -euo pipefail
 module load www-proxy    # Load www-proxy for internet access (seemed required)
 module load CUDA         # Load CUDA module
 
+MODEL="b4"
+IMG_SIZE=380
+BATCH_SIZE=32
+SEED=42
+
+FOLDER_NAME="${MODEL}_img${IMG_SIZE}_bs${BATCH_SIZE}_seed${SEED}"
+OUTPUT_DIR="/home/rb3143lw/CNN-age-inference/runs/${FOLDER_NAME}"
+
 python train_age.py \
     --data-root "/projects/greenwich-xr-security/HandsDatasets" \
-    --output-dir "/home/rb3143lw/CNN-age-inference/runs/test" \
-    --model b4 \
-    --img-size 380 \
-    --batch-size 32 \
+    --output-dir "${OUTPUT_DIR}" \
+    --model "${MODEL}" \
+    --img-size "${IMG_SIZE}" \
+    --batch-size "${BATCH_SIZE}" \
     --epochs 40 \
-    --seed 42 \
+    --seed "${SEED}" \
     --lr 0.0003
