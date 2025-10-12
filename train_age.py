@@ -291,6 +291,7 @@ def main() -> None:
     min_delta = 0.001
     patience = 10
     epochs_without_improvement = 0
+    history_entries: list[dict] = []
 
     for epoch in range(1, args.epochs + 1):
         model.train()
@@ -347,6 +348,15 @@ def main() -> None:
                 f"Epoch {epoch},train_loss={train_loss:.6f},train_mae={train_mae:.6f},train_mse={train_mse:.6f},"
                 f"val_loss={val_loss:.6f},val_mae={val_mae:.6f},val_mse={val_mse:.6f}\n"
             )
+        history_entries.append(
+            {
+                "epoch": epoch,
+                "train_mae": train_mae,
+                "val_mae": val_mae,
+                "train_rmse": float(np.sqrt(train_mse)),
+                "val_rmse": float(np.sqrt(val_mse)),
+            }
+        )
 
         # Save the model and a scatter plot only if validation loss improves
         if val_loss < best_val_loss:
@@ -384,6 +394,14 @@ def main() -> None:
             print(early_msg)
             with history_log_path.open("a", encoding="utf-8") as log_fp:
                 log_fp.write(f"# {early_msg}\n")
+            history_plot_path = output_dir / "history_plot.png"
+            DisplayUtils.plot_loss_history(
+                history_entries,
+                save_path=history_plot_path,
+                show=False,
+                title="Training History (MAE & RMSE)",
+            )
+            print(f"Saved training history plot to {history_plot_path}")
             break
 
     print("Training complete. Best model saved on validation improvement.")

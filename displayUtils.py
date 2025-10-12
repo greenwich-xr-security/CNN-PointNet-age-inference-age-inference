@@ -244,6 +244,63 @@ class DisplayUtils:
 
     # ------------------------------------------------------------------ #
     @staticmethod
+    def plot_loss_history(
+        history: Iterable[dict],
+        *,
+        save_path=None,
+        show: bool = True,
+        title: Optional[str] = None,
+    ) -> Optional[Path]:
+        """Plot training/validation MAE and RMSE curves over epochs.
+
+        Args:
+            history: Iterable of dicts with keys: epoch, train_mae, val_mae, train_rmse, val_rmse.
+            save_path: Optional path to save the plot. Creates parents as needed.
+            show: Whether to display the plot (default True).
+            title: Optional plot title.
+        Returns:
+            Path to the saved plot if saved, otherwise None.
+        """
+        entries = list(history)
+        if not entries:
+            print("plot_loss_history: no history entries provided.")
+            return None
+
+        epochs = [entry["epoch"] for entry in entries]
+        train_mae = [entry["train_mae"] for entry in entries]
+        val_mae = [entry["val_mae"] for entry in entries]
+        train_rmse = [entry["train_rmse"] for entry in entries]
+        val_rmse = [entry["val_rmse"] for entry in entries]
+
+        fig, ax = plt.subplots(figsize=(8, 5))
+        ax.plot(epochs, train_mae, label="Train MAE", color="#1f77b4")
+        ax.plot(epochs, val_mae, label="Val MAE", color="#ff7f0e")
+        ax.plot(epochs, train_rmse, label="Train RMSE", color="#2ca02c")
+        ax.plot(epochs, val_rmse, label="Val RMSE", color="#d62728")
+        ax.set_xlabel("Epoch")
+        ax.set_ylabel("Error")
+        if title:
+            ax.set_title(title)
+        ax.grid(True, linestyle="--", linewidth=0.5, alpha=0.3)
+        ax.legend()
+        fig.tight_layout()
+
+        saved_path = None
+        if save_path is not None:
+            save_path = Path(save_path)
+            save_path.parent.mkdir(parents=True, exist_ok=True)
+            fig.savefig(save_path)
+            saved_path = save_path
+
+        if show:
+            plt.show()
+        else:
+            plt.close(fig)
+
+        return saved_path
+
+    # ------------------------------------------------------------------ #
+    @staticmethod
     def _resize_to_max(img, max_dim):
         h, w = img.shape[:2]
         scale = 1.0
