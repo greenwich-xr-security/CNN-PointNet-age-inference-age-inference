@@ -18,7 +18,7 @@ BATCH_SIZE=32
 SEED=42
 
 FOLDER_NAME="${MODEL}_img${IMG_SIZE}_bs${BATCH_SIZE}_seed${SEED}"
-OUTPUT_DIR="/home/rb3143w/CNN-age-inference/runs/${FOLDER_NAME}"
+OUTPUT_DIR="/home/rb3434w/CNN-age-inference/runs/${FOLDER_NAME}"
 
 python train_age.py \
     --data-root "/projects/greenwich-xr-security/HandsDatasets" \
