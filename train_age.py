@@ -287,6 +287,7 @@ def main() -> None:
 
     best_val_loss = float("inf")
     best_model_path = output_dir / f"efficientnet_{model_variant}_age_regressor.pth"
+    history_log_path = output_dir / "history.log"
 
     for epoch in range(1, args.epochs + 1):
         model.train()
@@ -338,6 +339,11 @@ def main() -> None:
             f"train_loss={train_loss:.4f}, train_mae={train_mae:.4f}, train_mse={train_mse:.4f} | "
             f"val_loss={val_loss:.4f}, val_mae={val_mae:.4f}, val_mse={val_mse:.4f}"
         )
+        with history_log_path.open("a", encoding="utf-8") as log_fp:
+            log_fp.write(
+                f"Epoch {epoch},train_loss={train_loss:.6f},train_mae={train_mae:.6f},train_mse={train_mse:.6f},"
+                f"val_loss={val_loss:.6f},val_mae={val_mae:.6f},val_mse={val_mse:.6f}\n"
+            )
 
         # Save the model and a scatter plot only if validation loss improves
         if val_loss < best_val_loss:
