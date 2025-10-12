@@ -88,16 +88,9 @@ class AgeDataset(Dataset):
                 xmin, ymin, xmax, ymax = [int(v) for v in bbox]
                 if xmax > xmin and ymax > ymin:
                     w, h = image.size
-                    # compute square around bbox center
-                    bw = xmax - xmin
-                    bh = ymax - ymin
-                    side = int(max(bw, bh))
-                    cx = (xmin + xmax) / 2.0
-                    cy = (ymin + ymax) / 2.0
-                    sq_xmin = int(np.floor(cx - side / 2.0))
-                    sq_ymin = int(np.floor(cy - side / 2.0))
-                    sq_xmax = sq_xmin + side
-                    sq_ymax = sq_ymin + side
+                    sq_xmin, sq_ymin, sq_xmax, sq_ymax = DisplayUtils.make_square_bbox(
+                        (xmin, ymin, xmax, ymax)
+                    )
 
                     # compute required padding to keep crop inside image bounds
                     pad_left = max(0, -sq_xmin)

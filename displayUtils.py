@@ -173,6 +173,30 @@ class DisplayUtils:
 
     # ------------------------------------------------------------------ #
     @staticmethod
+    def make_square_bbox(bbox: Tuple[int, int, int, int]) -> Tuple[int, int, int, int]:
+        """Compute a square bounding box centered on the given bbox."""
+        if bbox is None:
+            raise ValueError("bbox must not be None")
+        if len(bbox) != 4:
+            raise ValueError("bbox must be a tuple (xmin, ymin, xmax, ymax)")
+
+        x1, y1, x2, y2 = [int(v) for v in bbox]
+        if x2 <= x1 or y2 <= y1:
+            raise ValueError(f"bbox has invalid coordinates: {bbox}")
+
+        bw = max(1, x2 - x1)
+        bh = max(1, y2 - y1)
+        side = max(bw, bh)
+        cx = (x1 + x2) / 2.0
+        cy = (y1 + y2) / 2.0
+        sx1 = int(np.floor(cx - side / 2.0))
+        sy1 = int(np.floor(cy - side / 2.0))
+        sx2 = sx1 + side
+        sy2 = sy1 + side
+        return sx1, sy1, sx2, sy2
+
+    # ------------------------------------------------------------------ #
+    @staticmethod
     def save_regression_scatter(
         targets: Iterable[float],
         predictions: Iterable[float],

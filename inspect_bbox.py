@@ -7,8 +7,6 @@ from typing import Iterable, Tuple
 import random
 
 import cv2
-import numpy as np
-
 from displayUtils import DisplayUtils
 from hands_dataset import (
     load_archive_metadata,
@@ -118,16 +116,11 @@ def main() -> None:
         # original bbox
         cv2.rectangle(work, (int(x1), int(y1)), (int(x2), int(y2)), (0, 255, 255), 2)
 
-        # compute square bbox centered on original bbox with side=max(width,height)
-        bw = max(1, int(x2) - int(x1))
-        bh = max(1, int(y2) - int(y1))
-        side = max(bw, bh)
-        cx = (int(x1) + int(x2)) / 2.0
-        cy = (int(y1) + int(y2)) / 2.0
-        sx1 = int(np.floor(cx - side / 2.0))
-        sy1 = int(np.floor(cy - side / 2.0))
-        sx2 = sx1 + side
-        sy2 = sy1 + side
+        try:
+            sx1, sy1, sx2, sy2 = DisplayUtils.make_square_bbox(bbox_tuple)
+        except ValueError as exc:
+            print(f"[inspect] {exc} for index {idx}, skipping.")
+            continue
         # Clamp for display (padding beyond edges is not visible on original image)
         sx1_d = max(0, sx1)
         sy1_d = max(0, sy1)
