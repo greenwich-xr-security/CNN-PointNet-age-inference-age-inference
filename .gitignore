@@ -15,3 +15,6 @@ __pycache__/
 
 # Ignore local editor config
 .vscode/
+
+# Training artifacts
+/runs/
