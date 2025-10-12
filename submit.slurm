@@ -13,18 +13,16 @@ module load www-proxy    # Load www-proxy for internet access (seemed required)
 module load CUDA         # Load CUDA module
 
 MODEL="b4"
-IMG_SIZE=380
 BATCH_SIZE=32
 SEED=42
 
-FOLDER_NAME="${MODEL}_img${IMG_SIZE}_bs${BATCH_SIZE}_seed${SEED}"
+FOLDER_NAME="${MODEL}_bs${BATCH_SIZE}_seed${SEED}"
 OUTPUT_DIR="/home/rb3434w/CNN-age-inference/runs/${FOLDER_NAME}"
 
 python train_age.py \
     --data-root "/home/rb3434w/HandsDatasets" \
     --output-dir "${OUTPUT_DIR}" \
     --model "${MODEL}" \
-    --img-size "${IMG_SIZE}" \
     --batch-size "${BATCH_SIZE}" \
     --epochs 40 \
     --seed "${SEED}" \

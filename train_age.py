@@ -207,7 +207,7 @@ def main() -> None:
         "--img-size",
         type=int,
         default=None,
-        help="Override the input resolution. Defaults to the canonical size for the chosen model.",
+        help="Override the input resolution (discouraged). By default the canonical size for the chosen model is used.",
     )
     parser.add_argument(
         "--batch-size",
@@ -238,7 +238,12 @@ def main() -> None:
     set_random_seed(args.seed)
     model_variant = args.model.lower()
     default_size = EFFICIENTNET_IMG_SIZES[model_variant]
-    img_size = args.img_size or default_size
+    if args.img_size is not None and args.img_size != default_size:
+        print(
+            f"[train] Ignoring requested --img-size {args.img_size}; "
+            f"EfficientNet-{model_variant.upper()} uses {default_size}."
+        )
+    img_size = default_size
 
     if args.data_root:
         set_dataset_root(args.data_root)
