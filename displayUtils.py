@@ -1,6 +1,7 @@
 import cv2
 import numpy as np
 from matplotlib import pyplot as plt
+from pathlib import Path
 from typing import Iterable, Optional, Tuple
 
 
@@ -169,6 +170,53 @@ class DisplayUtils:
         plt.tight_layout()
         plt.show(block=False)
         plt.pause(0.001)
+
+    # ------------------------------------------------------------------ #
+    @staticmethod
+    def save_regression_scatter(
+        targets: Iterable[float],
+        predictions: Iterable[float],
+        *,
+        save_path,
+        title: Optional[str] = None,
+        axis_limits: Optional[Tuple[float, float]] = None,
+        point_size: int = 20,
+        alpha: float = 0.6,
+    ) -> bool:
+        """Save a regression scatter plot without displaying it."""
+        targets_arr = np.asarray(list(targets), dtype=float)
+        preds_arr = np.asarray(list(predictions), dtype=float)
+        if targets_arr.size == 0:
+            print("save_regression_scatter: no data to plot.")
+            return False
+
+        if axis_limits is not None:
+            axis_min, axis_max = axis_limits
+        else:
+            min_val = float(np.min([targets_arr.min(), preds_arr.min()]))
+            max_val = float(np.max([targets_arr.max(), preds_arr.max()]))
+            padding = max(1.0, 0.05 * (max_val - min_val))
+            axis_min = min_val - padding
+            axis_max = max_val + padding
+
+        fig, ax = plt.subplots(figsize=(6, 6))
+        ax.scatter(targets_arr, preds_arr, s=point_size, alpha=alpha, edgecolors="none")
+        ax.plot([axis_min, axis_max], [axis_min, axis_max], "r--", linewidth=1)
+        ax.set_xlabel("True Age")
+        ax.set_ylabel("Predicted Age")
+        if title:
+            ax.set_title(title)
+        ax.set_xlim(axis_min, axis_max)
+        ax.set_ylim(axis_min, axis_max)
+        ax.set_aspect("equal", adjustable="box")
+        ax.grid(True, linestyle="--", linewidth=0.5, alpha=0.3)
+        fig.tight_layout()
+
+        save_path = Path(save_path)
+        save_path.parent.mkdir(parents=True, exist_ok=True)
+        fig.savefig(save_path)
+        plt.close(fig)
+        return True
 
     # ------------------------------------------------------------------ #
     @staticmethod

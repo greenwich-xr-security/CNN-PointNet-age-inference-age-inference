@@ -11,7 +11,6 @@ from sklearn.model_selection import train_test_split
 from torch.utils.data import Dataset, DataLoader
 from torchvision import models, transforms
 from tqdm import tqdm
-from matplotlib import pyplot as plt
 
 from hands_dataset import get_dataset_root, load_combined_metadata, set_dataset_root
 from displayUtils import DisplayUtils
@@ -348,26 +347,16 @@ def main() -> None:
             model_to_save = model.module if isinstance(model, nn.DataParallel) else model
             torch.save(model_to_save.state_dict(), best_model_path)
 
-            # Save scatter plot without displaying
-            targets_arr = np.asarray(val_targets, dtype=float)
-            preds_arr = np.asarray(val_predictions, dtype=float)
-            if targets_arr.size > 0 and preds_arr.size > 0:
-                axis_min, axis_max = 0.0, 70.0
-
-                plt.figure(figsize=(6, 6))
-                plt.scatter(targets_arr, preds_arr, s=20, alpha=0.6, edgecolors="none")
-                plt.plot([axis_min, axis_max], [axis_min, axis_max], "r--", linewidth=1)
-                plt.xlabel("True Age")
-                plt.ylabel("Predicted Age")
-                plt.title(f"Epoch {epoch} Age Predictions (best so far)")
-                plt.xlim(axis_min, axis_max)
-                plt.ylim(axis_min, axis_max)
-                plt.gca().set_aspect("equal", adjustable="box")
-                plt.grid(True, linestyle="--", linewidth=0.5, alpha=0.3)
-                plot_path = output_dir / f"age_val_scatter_epoch{epoch}.png"
-                plt.tight_layout()
-                plt.savefig(plot_path)
-                plt.close()
+            plot_path = output_dir / f"age_val_scatter_epoch{epoch}.png"
+            if DisplayUtils.save_regression_scatter(
+                val_targets,
+                val_predictions,
+                save_path=plot_path,
+                title=f"Epoch {epoch} Age Predictions (best so far)",
+                axis_limits=(0.0, 70.0),
+                point_size=20,
+                alpha=0.6,
+            ):
                 print(f"Saved best model to {best_model_path} (val_loss={val_loss:.4f}) and plot to {plot_path}")
 
     print("Training complete. Best model saved on validation improvement.")
