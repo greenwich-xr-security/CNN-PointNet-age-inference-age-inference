@@ -288,6 +288,9 @@ def main() -> None:
     best_val_loss = float("inf")
     best_model_path = output_dir / f"efficientnet_{model_variant}_age_regressor.pth"
     history_log_path = output_dir / "history.log"
+    min_delta = 0.001
+    patience = 10
+    epochs_without_improvement = 0
 
     for epoch in range(1, args.epochs + 1):
         model.train()
@@ -347,6 +350,9 @@ def main() -> None:
 
         # Save the model and a scatter plot only if validation loss improves
         if val_loss < best_val_loss:
+            improvement = (
+                float("inf") if best_val_loss == float("inf") else best_val_loss - val_loss
+            )
             best_val_loss = val_loss
             model_to_save = model.module if isinstance(model, nn.DataParallel) else model
             torch.save(model_to_save.state_dict(), best_model_path)
@@ -362,6 +368,23 @@ def main() -> None:
                 alpha=0.6,
             ):
                 print(f"Saved best model to {best_model_path} (val_loss={val_loss:.4f}) and plot to {plot_path}")
+
+            if improvement == float("inf") or improvement >= min_delta:
+                epochs_without_improvement = 0
+            else:
+                epochs_without_improvement += 1
+        else:
+            epochs_without_improvement += 1
+
+        if epochs_without_improvement >= patience:
+            early_msg = (
+                f"Early stopping at epoch {epoch}: validation loss did not improve by at least "
+                f"{min_delta:.3f} for {patience} consecutive epochs."
+            )
+            print(early_msg)
+            with history_log_path.open("a", encoding="utf-8") as log_fp:
+                log_fp.write(f"# {early_msg}\n")
+            break
 
     print("Training complete. Best model saved on validation improvement.")
 
