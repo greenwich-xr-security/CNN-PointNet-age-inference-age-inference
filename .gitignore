@@ -12,3 +12,6 @@ __pycache__/
 *.py[cod]
 *.cache/
 *.tmp
+
+# Ignore local editor config
+.vscode/
