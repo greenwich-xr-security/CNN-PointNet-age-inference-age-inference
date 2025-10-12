@@ -21,7 +21,7 @@ FOLDER_NAME="${MODEL}_img${IMG_SIZE}_bs${BATCH_SIZE}_seed${SEED}"
 OUTPUT_DIR="/home/rb3434w/CNN-age-inference/runs/${FOLDER_NAME}"
 
 python train_age.py \
-    --data-root "/home/rb3434w/CNN-age-inference/HandsDatasets" \
+    --data-root "/home/rb3434w/HandsDatasets" \
     --output-dir "${OUTPUT_DIR}" \
     --model "${MODEL}" \
     --img-size "${IMG_SIZE}" \
