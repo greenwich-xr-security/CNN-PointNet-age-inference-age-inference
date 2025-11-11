@@ -1,4 +1,5 @@
 import argparse
+import math
 import random
 from pathlib import Path
 
@@ -9,11 +10,12 @@ import torch.nn as nn
 from PIL import Image, ImageOps
 from sklearn.model_selection import train_test_split
 from torch.utils.data import Dataset, DataLoader
-from torchvision import models, transforms
+from torchvision import transforms
 from tqdm import tqdm
 
 from hands_dataset import get_dataset_root, load_combined_metadata, set_dataset_root
 from displayUtils import DisplayUtils
+from models import EFFICIENTNET_IMG_SIZES, EfficientNetAgeRegressor
 
 # Example (Windows): python train_age.py --data-root "C:\Users\Staff\OneDrive - University of Greenwich\HandsDatasets" --output-dir runs\b4_efficientnet --model b4 --img-size 380 --batch-size 32 --epochs 40 --seed 42 --lr 0.0003
 
@@ -24,32 +26,6 @@ DEFAULT_LR = 3e-4
 DEFAULT_MODEL_VARIANT = "b7"
 DEFAULT_SEED = 42
 DEVICE = torch.device("cuda" if torch.cuda.is_available() else "cpu")
-
-EFFICIENTNET_IMG_SIZES = {
-    "b0": 224,
-    "b1": 240,
-    "b2": 260,
-    "b3": 300,
-    "b4": 380,
-    "b5": 456,
-    "b6": 528,
-    "b7": 600,
-}
-
-def get_default_efficientnet_weights(variant: str):
-    """Resolve the torchvision weights enum for the requested EfficientNet variant."""
-    weights_enum_name = f"EfficientNet_{variant.upper()}_Weights"
-    weights_enum = getattr(models, weights_enum_name, None)
-    if weights_enum is None:
-        return None
-    default_weights = getattr(weights_enum, "DEFAULT", None)
-    if default_weights is not None:
-        return default_weights
-    try:
-        return next(iter(weights_enum))
-    except TypeError:
-        return None
-
 
 def set_random_seed(seed: int) -> None:
     random.seed(seed)
@@ -124,55 +100,125 @@ class AgeDataset(Dataset):
         return image, torch.tensor(age, dtype=torch.float32)
 
 
-class EfficientNetAgeRegressor(nn.Module):
-    def __init__(self, variant: str):
-        super().__init__()
-        variant = variant.lower()
-        if variant not in EFFICIENTNET_IMG_SIZES:
-            raise ValueError(f"Unsupported EfficientNet variant '{variant}'.")
-
-        model_name = f"efficientnet_{variant}"
-        if not hasattr(models, model_name):
-            raise ValueError(f"torchvision.models does not provide '{model_name}'.")
-
-        backbone_builder = getattr(models, model_name)
-
-        weights = get_default_efficientnet_weights(variant)
-        try:
-            if weights is not None:
-                backbone = backbone_builder(weights=weights)
-            else:
-                backbone = backbone_builder(pretrained=True)
-        except TypeError:
-            backbone = backbone_builder(pretrained=True)
-
-        self.backbone = backbone
-        self.variant = variant
-        # Replace the classifier to output mean and log-variance (2 values)
-        if isinstance(self.backbone.classifier, nn.Sequential) and len(self.backbone.classifier) >= 2:
-            in_feats = self.backbone.classifier[-1].in_features
-            self.backbone.classifier[-1] = nn.Linear(in_feats, 2)
-        else:
-            # Fallback: handle unexpected classifier structure
-            in_feats = getattr(self.backbone.classifier, 'in_features', None)
-            if in_feats is None:
-                raise RuntimeError(f"Unexpected EfficientNet-{variant.upper()} classifier structure")
-            self.backbone.classifier = nn.Linear(in_feats, 2)
-
-    def forward(self, x):
-        preds = self.backbone(x)
-        if preds.dim() == 1:
-            preds = preds.unsqueeze(1)
-        mean, log_var = preds.chunk(2, dim=1)
-        return mean.squeeze(1), log_var.squeeze(1)
-
-
 def gaussian_nll_loss(pred_mean: torch.Tensor, pred_log_var: torch.Tensor, target: torch.Tensor) -> torch.Tensor:
     """Negative log-likelihood under a Gaussian with predicted mean/log-variance."""
     log_var = torch.clamp(pred_log_var, min=-10.0, max=10.0)
     inv_var = torch.exp(-log_var)
     loss = 0.5 * (log_var + (target - pred_mean) ** 2 * inv_var)
     return torch.mean(loss)
+
+
+def compute_adult_probabilities(
+    pred_means,
+    pred_log_vars,
+    *,
+    age_threshold: float = 18.0,
+) -> np.ndarray:
+    """Return P(age >= threshold) from predicted Gaussian parameters."""
+    means = torch.as_tensor(pred_means, dtype=torch.float32, device="cpu")
+    log_vars = torch.as_tensor(pred_log_vars, dtype=torch.float32, device="cpu")
+    log_vars = torch.clamp(log_vars, min=-10.0, max=10.0)
+    std = torch.exp(0.5 * log_vars)
+    std = torch.clamp(std, min=1e-3)
+    z = (age_threshold - means) / std
+    cdf = 0.5 * (1.0 + torch.erf(z / math.sqrt(2.0)))
+    adult_prob = torch.clamp(1.0 - cdf, min=0.0, max=1.0)
+    return adult_prob.numpy()
+
+
+def _safe_rate(numerator: float, denominator: float) -> float:
+    if denominator <= 0:
+        return 0.0
+    return float(numerator) / float(denominator)
+
+
+def compute_age_gate_curves(
+    targets,
+    pred_means,
+    pred_log_vars,
+    *,
+    age_threshold: float = 18.0,
+    num_thresholds: int = 101,
+) -> dict:
+    """Compute ROC-style metrics for both policy cases using adult probabilities."""
+    targets_arr = np.asarray(targets, dtype=float)
+    adult_prob = compute_adult_probabilities(pred_means, pred_log_vars, age_threshold=age_threshold)
+    tau_values = np.linspace(0.0, 1.0, num=num_thresholds)
+
+    is_adult = targets_arr >= age_threshold
+    is_minor = ~is_adult
+    adult_total = int(is_adult.sum())
+    minor_total = int(is_minor.sum())
+
+    def build_case(admit_mask, positive_mask, negative_mask):
+        tp = np.logical_and(admit_mask, positive_mask).sum()
+        fp = np.logical_and(admit_mask, negative_mask).sum()
+        fn = np.logical_and(~admit_mask, positive_mask).sum()
+        tn = np.logical_and(~admit_mask, negative_mask).sum()
+        pos_total = positive_mask.sum()
+        neg_total = negative_mask.sum()
+        tpr = _safe_rate(tp, pos_total)
+        fpr = _safe_rate(fp, neg_total)
+        fnr = _safe_rate(fn, pos_total)
+        tnr = _safe_rate(tn, neg_total)
+        return fpr, tpr, fnr, tnr
+
+    case1_fprs = []
+    case1_tprs = []
+    case1_fnrs = []
+    case1_tnrs = []
+    case2_fprs = []
+    case2_tprs = []
+    case2_fnrs = []
+    case2_tnrs = []
+
+    for tau in tau_values:
+        admit_adult = adult_prob >= tau  # Case 1
+        fpr1, tpr1, fnr1, tnr1 = build_case(admit_adult, is_adult, is_minor)
+        case1_fprs.append(fpr1)
+        case1_tprs.append(tpr1)
+        case1_fnrs.append(fnr1)
+        case1_tnrs.append(tnr1)
+
+        admit_minor = adult_prob < tau  # Case 2
+        fpr2, tpr2, fnr2, tnr2 = build_case(admit_minor, is_minor, is_adult)
+        case2_fprs.append(fpr2)
+        case2_tprs.append(tpr2)
+        case2_fnrs.append(fnr2)
+        case2_tnrs.append(tnr2)
+
+    def compute_auc(fprs, tprs):
+        fprs_arr = np.asarray(fprs, dtype=float)
+        tprs_arr = np.asarray(tprs, dtype=float)
+        order = np.argsort(fprs_arr)
+        if fprs_arr.size == 0:
+            return 0.0
+        return float(np.trapz(tprs_arr[order], fprs_arr[order]))
+
+    results = {
+        "adult_prob": adult_prob,
+        "case1": {
+            "fpr": np.asarray(case1_fprs, dtype=float),
+            "tpr": np.asarray(case1_tprs, dtype=float),
+            "fnr": np.asarray(case1_fnrs, dtype=float),
+            "tnr": np.asarray(case1_tnrs, dtype=float),
+            "thresholds": tau_values,
+            "auc": compute_auc(case1_fprs, case1_tprs),
+            "adult_total": adult_total,
+            "minor_total": minor_total,
+        },
+        "case2": {
+            "fpr": np.asarray(case2_fprs, dtype=float),
+            "tpr": np.asarray(case2_tprs, dtype=float),
+            "fnr": np.asarray(case2_fnrs, dtype=float),
+            "tnr": np.asarray(case2_tnrs, dtype=float),
+            "thresholds": tau_values,
+            "auc": compute_auc(case2_fprs, case2_tprs),
+            "adult_total": adult_total,
+            "minor_total": minor_total,
+        },
+    }
+    return results
 
 
 def build_transforms(img_size: int):
@@ -339,6 +385,7 @@ def main() -> None:
         val_std = 0.0
         val_targets = []
         val_predictions = []
+        val_log_vars = []
         with torch.no_grad():
             for images, ages in test_loader:
                 images, ages = images.to(DEVICE), ages.to(DEVICE)
@@ -350,6 +397,7 @@ def main() -> None:
                 val_std += torch.mean(torch.exp(0.5 * torch.clamp(pred_log_var.detach(), min=-10.0, max=10.0))).item()
                 val_targets.extend(ages.detach().cpu().tolist())
                 val_predictions.extend(pred_mean.detach().cpu().tolist())
+                val_log_vars.extend(pred_log_var.detach().cpu().tolist())
 
         denom = max(1, len(test_loader))
         val_loss /= denom
@@ -377,7 +425,7 @@ def main() -> None:
             }
         )
 
-        # Save the model and a scatter plot only if validation loss improves
+        # Save the model and evaluation artifacts only if validation loss improves
         if val_loss < best_val_loss:
             improvement = (
                 float("inf") if best_val_loss == float("inf") else best_val_loss - val_loss
@@ -397,6 +445,71 @@ def main() -> None:
                 alpha=0.6,
             ):
                 print(f"Saved best model to {best_model_path} (val_loss={val_loss:.4f}) and plot to {plot_path}")
+
+            val_targets_arr = np.asarray(val_targets, dtype=float)
+            val_means_arr = np.asarray(val_predictions, dtype=float)
+            val_log_vars_arr = np.asarray(val_log_vars, dtype=float)
+            gate_results = compute_age_gate_curves(
+                val_targets_arr,
+                val_means_arr,
+                val_log_vars_arr,
+                age_threshold=18.0,
+                num_thresholds=201,
+            )
+
+            preds_dump_path = output_dir / "best_val_predictions.npz"
+            np.savez(
+                preds_dump_path,
+                targets=val_targets_arr,
+                pred_mean=val_means_arr,
+                pred_log_var=val_log_vars_arr,
+                adult_prob=gate_results["adult_prob"],
+                epoch=epoch,
+            )
+
+            roc_case1_path = output_dir / "roc_case1_adult_gate.png"
+            roc_case2_path = output_dir / "roc_case2_child_gate.png"
+            DisplayUtils.plot_roc_curve(
+                gate_results["case1"]["fpr"],
+                gate_results["case1"]["tpr"],
+                thresholds=gate_results["case1"]["thresholds"],
+                save_path=roc_case1_path,
+                title="ROC - Adult Content Gate (admit adults)",
+                auc_value=gate_results["case1"]["auc"],
+                show=False,
+            )
+            DisplayUtils.plot_roc_curve(
+                gate_results["case2"]["fpr"],
+                gate_results["case2"]["tpr"],
+                thresholds=gate_results["case2"]["thresholds"],
+                save_path=roc_case2_path,
+                title="ROC - Child Platform Gate (admit minors)",
+                auc_value=gate_results["case2"]["auc"],
+                show=False,
+            )
+
+            metrics_csv_path = output_dir / "age_gate_metrics.csv"
+            with metrics_csv_path.open("w", encoding="utf-8") as metrics_fp:
+                metrics_fp.write("case,tau,fpr,fnr,tpr,tnr\n")
+                for case_name, case_data in (
+                    ("adult_content_gate", gate_results["case1"]),
+                    ("child_platform_gate", gate_results["case2"]),
+                ):
+                    for tau, fpr, fnr, tpr_val, tnr in zip(
+                        case_data["thresholds"],
+                        case_data["fpr"],
+                        case_data["fnr"],
+                        case_data["tpr"],
+                        case_data["tnr"],
+                    ):
+                        metrics_fp.write(
+                            f"{case_name},{tau:.4f},{fpr:.6f},{fnr:.6f},{tpr_val:.6f},{tnr:.6f}\n"
+                        )
+
+            print(
+                f"Updated ROC plots ({roc_case1_path.name}, {roc_case2_path.name}), "
+                f"metrics CSV ({metrics_csv_path.name}), and saved predictions to {preds_dump_path.name}."
+            )
 
             if improvement == float("inf") or improvement >= min_delta:
                 epochs_without_improvement = 0
