@@ -148,19 +148,31 @@ class EfficientNetAgeRegressor(nn.Module):
 
         self.backbone = backbone
         self.variant = variant
-        # Replace the classifier to output a single regression value
+        # Replace the classifier to output mean and log-variance (2 values)
         if isinstance(self.backbone.classifier, nn.Sequential) and len(self.backbone.classifier) >= 2:
             in_feats = self.backbone.classifier[-1].in_features
-            self.backbone.classifier[-1] = nn.Linear(in_feats, 1)
+            self.backbone.classifier[-1] = nn.Linear(in_feats, 2)
         else:
             # Fallback: handle unexpected classifier structure
             in_feats = getattr(self.backbone.classifier, 'in_features', None)
             if in_feats is None:
                 raise RuntimeError(f"Unexpected EfficientNet-{variant.upper()} classifier structure")
-            self.backbone.classifier = nn.Linear(in_feats, 1)
+            self.backbone.classifier = nn.Linear(in_feats, 2)
 
     def forward(self, x):
-        return self.backbone(x).squeeze(1)
+        preds = self.backbone(x)
+        if preds.dim() == 1:
+            preds = preds.unsqueeze(1)
+        mean, log_var = preds.chunk(2, dim=1)
+        return mean.squeeze(1), log_var.squeeze(1)
+
+
+def gaussian_nll_loss(pred_mean: torch.Tensor, pred_log_var: torch.Tensor, target: torch.Tensor) -> torch.Tensor:
+    """Negative log-likelihood under a Gaussian with predicted mean/log-variance."""
+    log_var = torch.clamp(pred_log_var, min=-10.0, max=10.0)
+    inv_var = torch.exp(-log_var)
+    loss = 0.5 * (log_var + (target - pred_mean) ** 2 * inv_var)
+    return torch.mean(loss)
 
 
 def build_transforms(img_size: int):
@@ -282,7 +294,7 @@ def main() -> None:
             print(f"Using {gpu_count} GPUs via DataParallel.")
             model = nn.DataParallel(model)
     model = model.to(DEVICE)
-    criterion = nn.SmoothL1Loss()
+    criterion = gaussian_nll_loss
     optimizer = torch.optim.AdamW(model.parameters(), lr=args.lr)
 
     best_val_loss = float("inf")
@@ -298,55 +310,62 @@ def main() -> None:
         running_loss = 0.0
         running_mae = 0.0
         running_mse = 0.0
+        running_std = 0.0
         for images, ages in tqdm(train_loader, desc=f"Epoch {epoch}/{args.epochs}"):
             images, ages = images.to(DEVICE), ages.to(DEVICE)
             optimizer.zero_grad()
-            preds = model(images)
-            loss = criterion(preds, ages)
+            pred_mean, pred_log_var = model(images)
+            loss = criterion(pred_mean, pred_log_var, ages)
             loss.backward()
             optimizer.step()
             running_loss += loss.item()
-            mae = torch.mean(torch.abs(preds - ages)).item()
-            mse = torch.mean((preds - ages) ** 2).item()
+            mae = torch.mean(torch.abs(pred_mean - ages)).item()
+            mse = torch.mean((pred_mean - ages) ** 2).item()
+            avg_std = torch.mean(torch.exp(0.5 * torch.clamp(pred_log_var.detach(), min=-10.0, max=10.0))).item()
             running_mae += mae
             running_mse += mse
+            running_std += avg_std
 
         denom = max(1, len(train_loader))
         train_loss = running_loss / denom
         train_mae = running_mae / denom
         train_mse = running_mse / denom
+        train_std = running_std / denom
 
         model.eval()
         val_loss = 0.0
         val_mae = 0.0
         val_mse = 0.0
+        val_std = 0.0
         val_targets = []
         val_predictions = []
         with torch.no_grad():
             for images, ages in test_loader:
                 images, ages = images.to(DEVICE), ages.to(DEVICE)
-                preds = model(images)
-                batch_loss = criterion(preds, ages).item()
+                pred_mean, pred_log_var = model(images)
+                batch_loss = criterion(pred_mean, pred_log_var, ages).item()
                 val_loss += batch_loss
-                val_mae += torch.mean(torch.abs(preds - ages)).item()
-                val_mse += torch.mean((preds - ages) ** 2).item()
+                val_mae += torch.mean(torch.abs(pred_mean - ages)).item()
+                val_mse += torch.mean((pred_mean - ages) ** 2).item()
+                val_std += torch.mean(torch.exp(0.5 * torch.clamp(pred_log_var.detach(), min=-10.0, max=10.0))).item()
                 val_targets.extend(ages.detach().cpu().tolist())
-                val_predictions.extend(preds.detach().cpu().tolist())
+                val_predictions.extend(pred_mean.detach().cpu().tolist())
 
         denom = max(1, len(test_loader))
         val_loss /= denom
         val_mae /= denom
         val_mse /= denom
+        val_std /= denom
 
         print(
             f"Epoch {epoch}: "
-            f"train_loss={train_loss:.4f}, train_mae={train_mae:.4f}, train_mse={train_mse:.4f} | "
-            f"val_loss={val_loss:.4f}, val_mae={val_mae:.4f}, val_mse={val_mse:.4f}"
+            f"train_loss={train_loss:.4f}, train_mae={train_mae:.4f}, train_mse={train_mse:.4f}, train_std={train_std:.4f} | "
+            f"val_loss={val_loss:.4f}, val_mae={val_mae:.4f}, val_mse={val_mse:.4f}, val_std={val_std:.4f}"
         )
         with history_log_path.open("a", encoding="utf-8") as log_fp:
             log_fp.write(
                 f"Epoch {epoch},train_loss={train_loss:.6f},train_mae={train_mae:.6f},train_mse={train_mse:.6f},"
-                f"val_loss={val_loss:.6f},val_mae={val_mae:.6f},val_mse={val_mse:.6f}\n"
+                f"train_std={train_std:.6f},val_loss={val_loss:.6f},val_mae={val_mae:.6f},val_mse={val_mse:.6f},val_std={val_std:.6f}\n"
             )
         history_entries.append(
             {
