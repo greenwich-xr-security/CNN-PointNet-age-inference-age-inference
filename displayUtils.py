@@ -301,6 +301,65 @@ class DisplayUtils:
 
     # ------------------------------------------------------------------ #
     @staticmethod
+    def plot_roc_curve(
+        fprs,
+        tprs,
+        *,
+        thresholds,
+        save_path,
+        title: Optional[str] = None,
+        auc_value: Optional[float] = None,
+        show: bool = False,
+    ) -> Optional[Path]:
+        """Plot an ROC-style curve with thresholds encoded by colour."""
+        fprs_arr = np.asarray(list(fprs), dtype=float)
+        tprs_arr = np.asarray(list(tprs), dtype=float)
+        thresholds_arr = np.asarray(list(thresholds), dtype=float)
+        if fprs_arr.size == 0 or tprs_arr.size == 0:
+            print("plot_roc_curve: no data to plot.")
+            return None
+
+        order = np.argsort(fprs_arr)
+        ordered_fprs = fprs_arr[order]
+        ordered_tprs = tprs_arr[order]
+
+        fig, ax = plt.subplots(figsize=(6, 6))
+        ax.plot([0, 1], [0, 1], "k--", linewidth=1, label="Chance")
+        label = "ROC"
+        if auc_value is not None:
+            label += f" (AUC={auc_value:.3f})"
+        ax.plot(ordered_fprs, ordered_tprs, color="#1f77b4", label=label)
+        scatter = ax.scatter(
+            fprs_arr,
+            tprs_arr,
+            c=thresholds_arr,
+            cmap="viridis",
+            s=35,
+            edgecolors="none",
+        )
+        cbar = fig.colorbar(scatter, ax=ax)
+        cbar.set_label("Threshold tau", rotation=270, labelpad=15)
+        ax.set_xlabel("FPR (undesired risk)")
+        ax.set_ylabel("TPR (desired usability)")
+        if title:
+            ax.set_title(title)
+        ax.set_xlim(0, 1)
+        ax.set_ylim(0, 1)
+        ax.grid(True, linestyle="--", linewidth=0.5, alpha=0.3)
+        ax.legend(loc="lower right")
+        fig.tight_layout()
+
+        save_path = Path(save_path)
+        save_path.parent.mkdir(parents=True, exist_ok=True)
+        fig.savefig(save_path)
+        if show:
+            plt.show()
+        else:
+            plt.close(fig)
+        return save_path
+
+    # ------------------------------------------------------------------ #
+    @staticmethod
     def _resize_to_max(img, max_dim):
         h, w = img.shape[:2]
         scale = 1.0
