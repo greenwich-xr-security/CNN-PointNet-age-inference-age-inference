@@ -90,6 +90,18 @@ def stratified_user_split(
     return train_ids, test_ids
 
 
+def compute_age_group_counts(
+    df: pd.DataFrame,
+    *,
+    adult_threshold: float = ADULT_AGE_THRESHOLD,
+) -> tuple[int, int]:
+    """Return (adults, minors) counts for the provided metadata."""
+    ages = df["age"].astype(float)
+    adults = int((ages >= adult_threshold).sum())
+    minors = int((ages < adult_threshold).sum())
+    return adults, minors
+
+
 class AgeDataset(Dataset):
     def __init__(self, records: pd.DataFrame, transform=None):
         self.records = records.reset_index(drop=True)
@@ -367,12 +379,16 @@ def main() -> None:
     )
     train_meta = metadata[metadata["user_id"].isin(train_ids)]
     test_meta = metadata[metadata["user_id"].isin(test_ids)]
+    train_adults, train_minors = compute_age_group_counts(train_meta)
+    test_adults, test_minors = compute_age_group_counts(test_meta)
 
     print(
         f"Using dataset root: {active_root}\n"
         f"Saving artifacts to: {output_dir}\n"
         f"Train users: {train_meta['user_id'].nunique()} | Train images: {len(train_meta)}\n"
+        f"  ↳ Adults: {train_adults} | Minors: {train_minors}\n"
         f"Test users:  {test_meta['user_id'].nunique()} | Test images:  {len(test_meta)}\n"
+        f"  ↳ Adults: {test_adults} | Minors: {test_minors}\n"
         f"Model: EfficientNet-{model_variant.upper()} | Image size: {img_size} | Batch size: {args.batch_size}\n"
         f"Epochs: {args.epochs} | Learning rate: {args.lr:.2e} | Seed: {args.seed}"
     )

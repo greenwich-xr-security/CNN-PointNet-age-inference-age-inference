@@ -17,6 +17,7 @@ from train_age import (
     AgeDataset,
     build_transforms,
     compute_age_gate_curves,
+    compute_age_group_counts,
     filter_metadata,
     gaussian_nll_loss,
     stratified_user_split,
@@ -150,7 +151,9 @@ def build_datasets(args: argparse.Namespace, seed: int):
 
     train_ds = AgeDataset(train_meta, transform=train_transform)
     val_ds = AgeDataset(val_meta, transform=test_transform)
-    return train_ds, val_ds, active_root, len(train_meta), len(val_meta)
+    train_counts = compute_age_group_counts(train_meta)
+    val_counts = compute_age_group_counts(val_meta)
+    return train_ds, val_ds, active_root, len(train_meta), len(val_meta), train_counts, val_counts
 
 
 def build_dataloaders(
@@ -231,7 +234,15 @@ def main() -> None:
 
     set_random_seed(args.seed + rank)
 
-    train_dataset, val_dataset, active_root, train_len, val_len = build_datasets(args, args.seed)
+    (
+        train_dataset,
+        val_dataset,
+        active_root,
+        train_len,
+        val_len,
+        train_counts,
+        val_counts,
+    ) = build_datasets(args, args.seed)
     train_loader, val_loader, train_sampler = build_dataloaders(
         train_dataset,
         val_dataset,
@@ -245,11 +256,13 @@ def main() -> None:
     output_dir = Path(args.output_dir).expanduser()
     if is_main:
         output_dir.mkdir(parents=True, exist_ok=True)
+        train_adults, train_minors = train_counts
+        val_adults, val_minors = val_counts
         print(
             f"Using dataset root: {active_root}\n"
             f"Saving artifacts to: {output_dir}\n"
-            f"Train images: {train_len}\n"
-            f"Val images:   {val_len}\n"
+            f"Train images: {train_len} (Adults: {train_adults} | Minors: {train_minors})\n"
+            f"Val images:   {val_len} (Adults: {val_adults} | Minors: {val_minors})\n"
             f"Model: EfficientNet-{model_variant.upper()} | Image size: {default_size} | "
             f"Per-rank batch size: {args.batch_size}\n"
             f"Epochs: {args.epochs} | Learning rate: {args.lr:.2e} | Seed: {args.seed} | World size: {world_size}"
