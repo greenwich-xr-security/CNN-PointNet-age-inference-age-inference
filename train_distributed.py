@@ -256,13 +256,17 @@ def main() -> None:
     output_dir = Path(args.output_dir).expanduser()
     if is_main:
         output_dir.mkdir(parents=True, exist_ok=True)
-        train_adults, train_minors = train_counts
-        val_adults, val_minors = val_counts
+        train_user_count = train_counts.adult_users + train_counts.minor_users
+        val_user_count = val_counts.adult_users + val_counts.minor_users
         print(
             f"Using dataset root: {active_root}\n"
             f"Saving artifacts to: {output_dir}\n"
-            f"Train images: {train_len} (Adults: {train_adults} | Minors: {train_minors})\n"
-            f"Val images:   {val_len} (Adults: {val_adults} | Minors: {val_minors})\n"
+            f"Train users: {train_user_count} | Train images: {train_len}\n"
+            f"  Adults -> users: {train_counts.adult_users} | images: {train_counts.adult_images}\n"
+            f"  Minors -> users: {train_counts.minor_users} | images: {train_counts.minor_images}\n"
+            f"Val users:   {val_user_count} | Val images:   {val_len}\n"
+            f"  Adults -> users: {val_counts.adult_users} | images: {val_counts.adult_images}\n"
+            f"  Minors -> users: {val_counts.minor_users} | images: {val_counts.minor_images}\n"
             f"Model: EfficientNet-{model_variant.upper()} | Image size: {default_size} | "
             f"Per-rank batch size: {args.batch_size}\n"
             f"Epochs: {args.epochs} | Learning rate: {args.lr:.2e} | Seed: {args.seed} | World size: {world_size}"

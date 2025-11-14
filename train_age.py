@@ -1,6 +1,7 @@
 import argparse
 import math
 import random
+from dataclasses import dataclass
 from pathlib import Path
 
 import numpy as np
@@ -27,6 +28,14 @@ DEFAULT_MODEL_VARIANT = "b7"
 DEFAULT_SEED = 42
 ADULT_AGE_THRESHOLD = 18.0
 DEVICE = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+
+
+@dataclass(frozen=True)
+class AgeGroupCounts:
+    adult_images: int
+    minor_images: int
+    adult_users: int
+    minor_users: int
 
 def set_random_seed(seed: int) -> None:
     random.seed(seed)
@@ -94,12 +103,32 @@ def compute_age_group_counts(
     df: pd.DataFrame,
     *,
     adult_threshold: float = ADULT_AGE_THRESHOLD,
-) -> tuple[int, int]:
-    """Return (adults, minors) counts for the provided metadata."""
+) -> AgeGroupCounts:
+    """Return image and user counts for each age group."""
+    if df.empty:
+        return AgeGroupCounts(0, 0, 0, 0)
+
     ages = df["age"].astype(float)
-    adults = int((ages >= adult_threshold).sum())
-    minors = int((ages < adult_threshold).sum())
-    return adults, minors
+    adult_mask = ages >= adult_threshold
+    minor_mask = ~adult_mask
+
+    adult_images = int(adult_mask.sum())
+    minor_images = int(minor_mask.sum())
+
+    user_means = (
+        df.assign(age=ages)
+        .groupby("user_id")["age"]
+        .mean()
+    )
+    adult_users = int((user_means >= adult_threshold).sum())
+    minor_users = int((user_means < adult_threshold).sum())
+
+    return AgeGroupCounts(
+        adult_images=adult_images,
+        minor_images=minor_images,
+        adult_users=adult_users,
+        minor_users=minor_users,
+    )
 
 
 class AgeDataset(Dataset):
@@ -379,16 +408,18 @@ def main() -> None:
     )
     train_meta = metadata[metadata["user_id"].isin(train_ids)]
     test_meta = metadata[metadata["user_id"].isin(test_ids)]
-    train_adults, train_minors = compute_age_group_counts(train_meta)
-    test_adults, test_minors = compute_age_group_counts(test_meta)
+    train_counts = compute_age_group_counts(train_meta)
+    test_counts = compute_age_group_counts(test_meta)
 
     print(
         f"Using dataset root: {active_root}\n"
         f"Saving artifacts to: {output_dir}\n"
         f"Train users: {train_meta['user_id'].nunique()} | Train images: {len(train_meta)}\n"
-        f"  ↳ Adults: {train_adults} | Minors: {train_minors}\n"
+        f"  Adults -> users: {train_counts.adult_users} | images: {train_counts.adult_images}\n"
+        f"  Minors -> users: {train_counts.minor_users} | images: {train_counts.minor_images}\n"
         f"Test users:  {test_meta['user_id'].nunique()} | Test images:  {len(test_meta)}\n"
-        f"  ↳ Adults: {test_adults} | Minors: {test_minors}\n"
+        f"  Adults -> users: {test_counts.adult_users} | images: {test_counts.adult_images}\n"
+        f"  Minors -> users: {test_counts.minor_users} | images: {test_counts.minor_images}\n"
         f"Model: EfficientNet-{model_variant.upper()} | Image size: {img_size} | Batch size: {args.batch_size}\n"
         f"Epochs: {args.epochs} | Learning rate: {args.lr:.2e} | Seed: {args.seed}"
     )
