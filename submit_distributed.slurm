@@ -4,7 +4,7 @@
 #SBATCH --ntasks-per-node=1               # torchrun will launch local ranks
 #SBATCH --partition=gpu-beast             # GPU partition
 #SBATCH --cpus-per-task=16                # CPU cores available to each task
-#SBATCH --output=%x-%j.log                # Stdout/stderr log file
+#SBATCH --output=logs/%x-%j.log           # Stdout/stderr log file
 #SBATCH --mail-type=ALL                   # Email notifications
 #SBATCH --mail-user=rb3434w@gre.ac.uk     # TODO: change to preferred email
 
