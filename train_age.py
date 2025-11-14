@@ -25,6 +25,7 @@ DEFAULT_EPOCHS = 40
 DEFAULT_LR = 3e-4
 DEFAULT_MODEL_VARIANT = "b7"
 DEFAULT_SEED = 42
+ADULT_AGE_THRESHOLD = 18.0
 DEVICE = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 
 def set_random_seed(seed: int) -> None:
@@ -41,6 +42,52 @@ def filter_metadata(df: pd.DataFrame) -> pd.DataFrame:
     df = df.copy()
     df["age"] = df["age"].astype(float)
     return df.reset_index(drop=True)
+
+
+def stratified_user_split(
+    metadata: pd.DataFrame,
+    *,
+    test_size: float,
+    random_state: int,
+    adult_threshold: float = ADULT_AGE_THRESHOLD,
+):
+    """
+    Split unique users into train/test partitions while preserving the adult/minor ratio.
+    Falls back to an unstratified split when one of the groups is too small for the
+    requested proportions.
+    """
+    if "user_id" not in metadata.columns:
+        raise ValueError("metadata must include a 'user_id' column for grouping.")
+    if "age" not in metadata.columns:
+        raise ValueError("metadata must include an 'age' column for stratification.")
+
+    per_user = (
+        metadata.groupby("user_id")["age"]
+        .mean()
+        .rename("mean_age")
+        .reset_index()
+    )
+    if per_user.empty:
+        raise ValueError("No user records available after filtering; cannot split dataset.")
+
+    labels = (per_user["mean_age"].to_numpy() >= adult_threshold).astype(int)
+    user_ids = per_user["user_id"].to_numpy()
+
+    stratify = None
+    unique_labels, label_counts = np.unique(labels, return_counts=True)
+    if unique_labels.size > 1:
+        n_test = np.ceil(label_counts * test_size).astype(int)
+        n_train = label_counts - n_test
+        if np.all(n_test >= 1) and np.all(n_train >= 1):
+            stratify = labels
+
+    train_ids, test_ids = train_test_split(
+        user_ids,
+        test_size=test_size,
+        random_state=random_state,
+        stratify=stratify,
+    )
+    return train_ids, test_ids
 
 
 class AgeDataset(Dataset):
@@ -313,8 +360,11 @@ def main() -> None:
     train_transform, test_transform = build_transforms(img_size)
 
     metadata = filter_metadata(load_combined_metadata(root=active_root))
-    user_ids = metadata["user_id"].unique()
-    train_ids, test_ids = train_test_split(user_ids, test_size=0.2, random_state=args.seed)
+    train_ids, test_ids = stratified_user_split(
+        metadata,
+        test_size=0.2,
+        random_state=args.seed,
+    )
     train_meta = metadata[metadata["user_id"].isin(train_ids)]
     test_meta = metadata[metadata["user_id"].isin(test_ids)]
 

@@ -8,7 +8,6 @@ import torch
 import torch.distributed as dist
 from torch.nn.parallel import DistributedDataParallel
 from torch.utils.data import DataLoader, DistributedSampler
-from sklearn.model_selection import train_test_split
 from tqdm import tqdm
 
 from displayUtils import DisplayUtils
@@ -20,6 +19,7 @@ from train_age import (
     compute_age_gate_curves,
     filter_metadata,
     gaussian_nll_loss,
+    stratified_user_split,
     set_random_seed,
 )
 
@@ -140,8 +140,11 @@ def build_datasets(args: argparse.Namespace, seed: int):
     train_transform, test_transform = build_transforms(EFFICIENTNET_IMG_SIZES[args.model])
 
     metadata = filter_metadata(load_combined_metadata(root=active_root))
-    user_ids = metadata["user_id"].unique()
-    train_ids, val_ids = train_test_split(user_ids, test_size=0.2, random_state=seed)
+    train_ids, val_ids = stratified_user_split(
+        metadata,
+        test_size=0.2,
+        random_state=seed,
+    )
     train_meta = metadata[metadata["user_id"].isin(train_ids)]
     val_meta = metadata[metadata["user_id"].isin(val_ids)]
 
