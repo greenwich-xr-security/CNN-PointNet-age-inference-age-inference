@@ -13,13 +13,14 @@ from tqdm import tqdm
 
 from displayUtils import DisplayUtils
 from hands_dataset import get_dataset_root, load_combined_metadata, set_dataset_root
+from metrics import LossWeights, weighted_regression_loss
 from models import EFFICIENTNET_IMG_SIZES, EfficientNetAgeRegressor
 from train_age import (
     AgeDataset,
     build_transforms,
     compute_age_gate_curves,
     filter_metadata,
-    gaussian_nll_loss,
+    stratified_user_split,
     set_random_seed,
 )
 
@@ -39,6 +40,11 @@ def parse_args() -> argparse.Namespace:
         type=str,
         default=None,
         help="Path to the dataset root directory. Overrides the default or env var.",
+    )
+    parser.add_argument(
+        "--no-stratified-user-split",
+        action="store_true",
+        help="Disable per-user stratification when splitting the dataset.",
     )
     parser.add_argument(
         "--output-dir",
@@ -82,6 +88,24 @@ def parse_args() -> argparse.Namespace:
         type=float,
         default=DEFAULT_LR,
         help="Learning rate for AdamW optimizer (default: 3e-4).",
+    )
+    parser.add_argument(
+        "--loss-weight-nll",
+        type=float,
+        default=0.5,
+        help="Weight for the Gaussian NLL component (default: 0.5; set to 1.0 for legacy behaviour).",
+    )
+    parser.add_argument(
+        "--loss-weight-mse",
+        type=float,
+        default=0.25,
+        help="Weight for the MSE component (default: 0.25).",
+    )
+    parser.add_argument(
+        "--loss-weight-mae",
+        type=float,
+        default=0.25,
+        help="Weight for the MAE component (default: 0.25).",
     )
     parser.add_argument(
         "--num-workers",
@@ -140,8 +164,15 @@ def build_datasets(args: argparse.Namespace, seed: int):
     train_transform, test_transform = build_transforms(EFFICIENTNET_IMG_SIZES[args.model])
 
     metadata = filter_metadata(load_combined_metadata(root=active_root))
-    user_ids = metadata["user_id"].unique()
-    train_ids, val_ids = train_test_split(user_ids, test_size=0.2, random_state=seed)
+    if args.no_stratified_user_split:
+        user_ids = metadata["user_id"].unique()
+        train_ids, val_ids = train_test_split(user_ids, test_size=0.2, random_state=seed)
+    else:
+        train_ids, val_ids = stratified_user_split(
+            metadata,
+            test_size=0.2,
+            random_state=seed,
+        )
     train_meta = metadata[metadata["user_id"].isin(train_ids)]
     val_meta = metadata[metadata["user_id"].isin(val_ids)]
 
@@ -215,6 +246,12 @@ def gather_all_lists(local_list, world_size: int):
 
 def main() -> None:
     args = parse_args()
+    loss_weights = LossWeights(
+        nll=args.loss_weight_nll,
+        mse=args.loss_weight_mse,
+        mae=args.loss_weight_mae,
+    )
+    loss_weights.validate()
     rank, world_size, local_rank, device = init_distributed(args)
     is_main = rank == 0
 
@@ -251,6 +288,16 @@ def main() -> None:
             f"Per-rank batch size: {args.batch_size}\n"
             f"Epochs: {args.epochs} | Learning rate: {args.lr:.2e} | Seed: {args.seed} | World size: {world_size}"
         )
+        print(
+            f"Loss weights -> NLL: {loss_weights.nll:.3f}, "
+            f"MSE: {loss_weights.mse:.3f}, MAE: {loss_weights.mae:.3f}"
+        )
+        split_desc = (
+            "Unstratified per-user split (random)."
+            if args.no_stratified_user_split
+            else "Stratified per-user split (adult/minor aware)."
+        )
+        print(f"Split mode: {split_desc}")
 
     model = EfficientNetAgeRegressor(model_variant).to(device)
     ddp_model = DistributedDataParallel(
@@ -259,7 +306,6 @@ def main() -> None:
         output_device=local_rank if device.type == "cuda" else None,
         find_unused_parameters=args.find_unused_params,
     )
-    criterion = gaussian_nll_loss
     optimizer = torch.optim.AdamW(ddp_model.parameters(), lr=args.lr)
 
     best_val_loss = float("inf")
@@ -289,7 +335,7 @@ def main() -> None:
             ages = ages.to(device, non_blocking=True)
             optimizer.zero_grad()
             pred_mean, pred_log_var = ddp_model(images)
-            loss = criterion(pred_mean, pred_log_var, ages)
+            loss = weighted_regression_loss(pred_mean, pred_log_var, ages, loss_weights)
             loss.backward()
             optimizer.step()
 
@@ -327,7 +373,7 @@ def main() -> None:
                 images = images.to(device, non_blocking=True)
                 ages = ages.to(device, non_blocking=True)
                 pred_mean, pred_log_var = ddp_model(images)
-                batch_loss = criterion(pred_mean, pred_log_var, ages)
+                batch_loss = weighted_regression_loss(pred_mean, pred_log_var, ages, loss_weights)
 
                 batch_size = ages.size(0)
                 val_sample_count += batch_size

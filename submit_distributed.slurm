@@ -56,6 +56,10 @@ torchrun \
   --lr 3e-4 \
   --num-workers 8 \
   --seed "${SEED}" \
+  --no-stratified-user-split \
+  --loss-weight-nll 0.5 \
+  --loss-weight-mse 0.25 \
+  --loss-weight-mae 0.25 \
   --dist-backend nccl
 
 echo ">>> Training complete. Artifacts in ${RUN_OUT}"

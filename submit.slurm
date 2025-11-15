@@ -26,4 +26,8 @@ python train_age.py \
     --batch-size "${BATCH_SIZE}" \
     --epochs 40 \
     --seed "${SEED}" \
-    --lr 0.0003
+    --lr 0.0003 \
+    --no-stratified-user-split \
+    --loss-weight-nll 0.5 \
+    --loss-weight-mse 0.25 \
+    --loss-weight-mae 0.25

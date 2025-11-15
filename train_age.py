@@ -15,6 +15,7 @@ from tqdm import tqdm
 
 from hands_dataset import get_dataset_root, load_combined_metadata, set_dataset_root
 from displayUtils import DisplayUtils
+from metrics import LossWeights, weighted_regression_loss
 from models import EFFICIENTNET_IMG_SIZES, EfficientNetAgeRegressor
 
 # Example (Windows): python train_age.py --data-root "C:\Users\Staff\OneDrive - University of Greenwich\HandsDatasets" --output-dir runs\b4_efficientnet --model b4 --img-size 380 --batch-size 32 --epochs 40 --seed 42 --lr 0.0003
@@ -41,6 +42,46 @@ def filter_metadata(df: pd.DataFrame) -> pd.DataFrame:
     df = df.copy()
     df["age"] = df["age"].astype(float)
     return df.reset_index(drop=True)
+
+
+def stratified_user_split(
+    metadata: pd.DataFrame,
+    *,
+    test_size: float,
+    random_state: int,
+    adult_threshold: float = 18.0,
+) -> tuple[np.ndarray, np.ndarray]:
+    """Split unique users while preserving the adult/minor ratio when possible."""
+    if "user_id" not in metadata.columns or "age" not in metadata.columns:
+        raise ValueError("metadata must include 'user_id' and 'age' columns for stratification.")
+
+    per_user = (
+        metadata.groupby("user_id")["age"]
+        .mean()
+        .rename("mean_age")
+        .reset_index()
+    )
+    if per_user.empty:
+        raise ValueError("No user records available after filtering; cannot split dataset.")
+
+    labels = (per_user["mean_age"].to_numpy() >= adult_threshold).astype(int)
+    user_ids = per_user["user_id"].to_numpy()
+
+    stratify = None
+    unique_labels, label_counts = np.unique(labels, return_counts=True)
+    if unique_labels.size > 1:
+        n_test = np.ceil(label_counts * test_size).astype(int)
+        n_train = label_counts - n_test
+        if np.all(n_test >= 1) and np.all(n_train >= 1):
+            stratify = labels
+
+    train_ids, test_ids = train_test_split(
+        user_ids,
+        test_size=test_size,
+        random_state=random_state,
+        stratify=stratify,
+    )
+    return train_ids, test_ids
 
 
 class AgeDataset(Dataset):
@@ -98,14 +139,6 @@ class AgeDataset(Dataset):
         if self.transform:
             image = self.transform(image)
         return image, torch.tensor(age, dtype=torch.float32)
-
-
-def gaussian_nll_loss(pred_mean: torch.Tensor, pred_log_var: torch.Tensor, target: torch.Tensor) -> torch.Tensor:
-    """Negative log-likelihood under a Gaussian with predicted mean/log-variance."""
-    log_var = torch.clamp(pred_log_var, min=-10.0, max=10.0)
-    inv_var = torch.exp(-log_var)
-    loss = 0.5 * (log_var + (target - pred_mean) ** 2 * inv_var)
-    return torch.mean(loss)
 
 
 def compute_adult_probabilities(
@@ -291,7 +324,37 @@ def main() -> None:
         default=DEFAULT_LR,
         help="Learning rate for AdamW optimizer (default: 3e-4).",
     )
+    parser.add_argument(
+        "--no-stratified-user-split",
+        action="store_true",
+        help="Disable per-user stratification when splitting the dataset.",
+    )
+    parser.add_argument(
+        "--loss-weight-nll",
+        type=float,
+        default=0.5,
+        help="Weight for the Gaussian NLL component (default: 0.5; set to 1.0 for legacy behaviour).",
+    )
+    parser.add_argument(
+        "--loss-weight-mse",
+        type=float,
+        default=0.25,
+        help="Weight for the MSE component (default: 0.25).",
+    )
+    parser.add_argument(
+        "--loss-weight-mae",
+        type=float,
+        default=0.25,
+        help="Weight for the MAE component (default: 0.25).",
+    )
     args = parser.parse_args()
+
+    loss_weights = LossWeights(
+        nll=args.loss_weight_nll,
+        mse=args.loss_weight_mse,
+        mae=args.loss_weight_mae,
+    )
+    loss_weights.validate()
 
     set_random_seed(args.seed)
     model_variant = args.model.lower()
@@ -313,8 +376,15 @@ def main() -> None:
     train_transform, test_transform = build_transforms(img_size)
 
     metadata = filter_metadata(load_combined_metadata(root=active_root))
-    user_ids = metadata["user_id"].unique()
-    train_ids, test_ids = train_test_split(user_ids, test_size=0.2, random_state=args.seed)
+    if args.no_stratified_user_split:
+        user_ids = metadata["user_id"].unique()
+        train_ids, test_ids = train_test_split(user_ids, test_size=0.2, random_state=args.seed)
+    else:
+        train_ids, test_ids = stratified_user_split(
+            metadata,
+            test_size=0.2,
+            random_state=args.seed,
+        )
     train_meta = metadata[metadata["user_id"].isin(train_ids)]
     test_meta = metadata[metadata["user_id"].isin(test_ids)]
 
@@ -326,6 +396,16 @@ def main() -> None:
         f"Model: EfficientNet-{model_variant.upper()} | Image size: {img_size} | Batch size: {args.batch_size}\n"
         f"Epochs: {args.epochs} | Learning rate: {args.lr:.2e} | Seed: {args.seed}"
     )
+    print(
+        f"Loss weights -> NLL: {loss_weights.nll:.3f}, "
+        f"MSE: {loss_weights.mse:.3f}, MAE: {loss_weights.mae:.3f}"
+    )
+    split_desc = (
+        "Unstratified per-user split (random)."
+        if args.no_stratified_user_split
+        else "Stratified per-user split (adult/minor aware)."
+    )
+    print(f"Split mode: {split_desc}")
 
     train_ds = AgeDataset(train_meta, transform=train_transform)
     test_ds = AgeDataset(test_meta, transform=test_transform)
@@ -340,7 +420,6 @@ def main() -> None:
             print(f"Using {gpu_count} GPUs via DataParallel.")
             model = nn.DataParallel(model)
     model = model.to(DEVICE)
-    criterion = gaussian_nll_loss
     optimizer = torch.optim.AdamW(model.parameters(), lr=args.lr)
 
     best_val_loss = float("inf")
@@ -361,7 +440,7 @@ def main() -> None:
             images, ages = images.to(DEVICE), ages.to(DEVICE)
             optimizer.zero_grad()
             pred_mean, pred_log_var = model(images)
-            loss = criterion(pred_mean, pred_log_var, ages)
+            loss = weighted_regression_loss(pred_mean, pred_log_var, ages, loss_weights)
             loss.backward()
             optimizer.step()
             running_loss += loss.item()
@@ -390,7 +469,7 @@ def main() -> None:
             for images, ages in test_loader:
                 images, ages = images.to(DEVICE), ages.to(DEVICE)
                 pred_mean, pred_log_var = model(images)
-                batch_loss = criterion(pred_mean, pred_log_var, ages).item()
+                batch_loss = weighted_regression_loss(pred_mean, pred_log_var, ages, loss_weights).item()
                 val_loss += batch_loss
                 val_mae += torch.mean(torch.abs(pred_mean - ages)).item()
                 val_mse += torch.mean((pred_mean - ages) ** 2).item()
