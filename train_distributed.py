@@ -9,6 +9,7 @@ import torch.distributed as dist
 from torch.nn.parallel import DistributedDataParallel
 from torch.utils.data import DataLoader, DistributedSampler
 from tqdm import tqdm
+from sklearn.model_selection import train_test_split
 
 from displayUtils import DisplayUtils
 from hands_dataset import get_dataset_root, load_combined_metadata, set_dataset_root
@@ -108,6 +109,11 @@ def parse_args() -> argparse.Namespace:
         action="store_true",
         help="Enable DistributedDataParallel(find_unused_parameters=True).",
     )
+    parser.add_argument(
+        "--no-stratified-user-split",
+        action="store_true",
+        help="Disable per-user stratification when splitting the dataset.",
+    )
     return parser.parse_args()
 
 
@@ -141,11 +147,12 @@ def build_datasets(args: argparse.Namespace, seed: int):
     train_transform, test_transform = build_transforms(EFFICIENTNET_IMG_SIZES[args.model])
 
     metadata = filter_metadata(load_combined_metadata(root=active_root))
-    train_ids, val_ids = stratified_user_split(
-        metadata,
-        test_size=0.2,
-        random_state=seed,
-    )
+    split_kwargs = dict(test_size=0.2, random_state=seed)
+    if args.no_stratified_user_split:
+        user_ids = metadata["user_id"].unique()
+        train_ids, val_ids = train_test_split(user_ids, **split_kwargs)
+    else:
+        train_ids, val_ids = stratified_user_split(metadata, **split_kwargs)
     train_meta = metadata[metadata["user_id"].isin(train_ids)]
     val_meta = metadata[metadata["user_id"].isin(val_ids)]
 

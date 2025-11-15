@@ -379,6 +379,11 @@ def main() -> None:
         default=DEFAULT_LR,
         help="Learning rate for AdamW optimizer (default: 3e-4).",
     )
+    parser.add_argument(
+        "--no-stratified-user-split",
+        action="store_true",
+        help="Disable per-user stratification when splitting the dataset.",
+    )
     args = parser.parse_args()
 
     set_random_seed(args.seed)
@@ -401,11 +406,12 @@ def main() -> None:
     train_transform, test_transform = build_transforms(img_size)
 
     metadata = filter_metadata(load_combined_metadata(root=active_root))
-    train_ids, test_ids = stratified_user_split(
-        metadata,
-        test_size=0.2,
-        random_state=args.seed,
-    )
+    split_kwargs = dict(test_size=0.2, random_state=args.seed)
+    if args.no_stratified_user_split:
+        user_ids = metadata["user_id"].unique()
+        train_ids, test_ids = train_test_split(user_ids, **split_kwargs)
+    else:
+        train_ids, test_ids = stratified_user_split(metadata, **split_kwargs)
     train_meta = metadata[metadata["user_id"].isin(train_ids)]
     test_meta = metadata[metadata["user_id"].isin(test_ids)]
     train_counts = compute_age_group_counts(train_meta)

@@ -76,6 +76,7 @@ for CURRENT_MODEL in "${MODEL_VARIANTS[@]}"; do
     --lr "${LR}" \
     --num-workers "${NUM_WORKERS}" \
     --seed "${SEED}" \
+    --no-stratified-user-split \
     --dist-backend nccl
 
   echo ">>> Training complete for ${CURRENT_MODEL}. Artifacts in ${RUN_OUT}"

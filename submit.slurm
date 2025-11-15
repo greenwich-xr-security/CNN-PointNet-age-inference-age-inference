@@ -26,4 +26,5 @@ python train_age.py \
     --batch-size "${BATCH_SIZE}" \
     --epochs 40 \
     --seed "${SEED}" \
-    --lr 0.0003
+    --lr 0.0003 \
+    --no-stratified-user-split
