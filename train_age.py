@@ -426,7 +426,7 @@ def main() -> None:
     best_model_path = output_dir / f"efficientnet_{model_variant}_age_regressor.pth"
     history_log_path = output_dir / "history.log"
     min_delta = 0.001
-    patience = 7
+    patience = 20
     epochs_without_improvement = 0
     history_entries: list[dict] = []
 
