@@ -553,8 +553,8 @@ def main() -> None:
                 epoch=epoch,
             )
 
-            roc_case1_path = output_dir / "roc_case1_adult_gate.png"
-            roc_case2_path = output_dir / "roc_case2_child_gate.png"
+            roc_case1_path = output_dir / f"roc_case1_adult_gate_epoch{epoch}.png"
+            roc_case2_path = output_dir / f"roc_case2_child_gate_epoch{epoch}.png"
             DisplayUtils.plot_roc_curve(
                 gate_results["case1"]["fpr"],
                 gate_results["case1"]["tpr"],
