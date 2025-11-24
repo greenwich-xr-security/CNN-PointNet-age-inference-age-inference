@@ -56,7 +56,7 @@ for MODEL_NAME in ${MODELS}; do
     --output-dir "${RUN_OUT}" \
     --model "${MODEL_NAME}" \
     --batch-size "${BATCH_SIZE}" \
-    --epochs 60 \
+    --epochs 240 \
     --lr 3e-4 \
     --num-workers 8 \
     --seed "${SEED}" \
