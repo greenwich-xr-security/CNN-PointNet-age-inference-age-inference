@@ -13,6 +13,7 @@ from displayUtils import DisplayUtils
 from hands_dataset import (
     load_archive_metadata,
     load_combined_metadata,
+    load_handrgbd_metadata,
     load_primary_metadata,
 )
 
@@ -35,6 +36,8 @@ def _load_metadata(source: str):
         return load_primary_metadata()
     if source == "archive":
         return load_archive_metadata()
+    if source == "handrgbd":
+        return load_handrgbd_metadata()
     return load_combined_metadata()
 
 
@@ -42,7 +45,7 @@ def _parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description="Inspect bounding boxes visually.")
     parser.add_argument(
         "--source",
-        choices=("primary", "archive", "combined"),
+        choices=("primary", "archive", "handrgbd", "combined"),
         default="combined",
         help="Dataset partition to inspect.",
     )
