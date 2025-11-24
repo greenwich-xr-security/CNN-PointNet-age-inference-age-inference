@@ -78,6 +78,12 @@ def parse_args() -> argparse.Namespace:
         help="Number of training epochs (default: 40).",
     )
     parser.add_argument(
+        "--patience",
+        type=int,
+        default=DEFAULT_PATIENCE,
+        help=f"Early stopping patience in epochs (default: {DEFAULT_PATIENCE}).",
+    )
+    parser.add_argument(
         "--seed",
         type=int,
         default=DEFAULT_SEED,
@@ -312,7 +318,7 @@ def main() -> None:
     best_model_path = output_dir / f"efficientnet_{model_variant}_age_regressor_ddp.pth"
     history_log_path = output_dir / "history_distributed.log"
     min_delta = DEFAULT_MIN_DELTA
-    patience = DEFAULT_PATIENCE
+    patience = max(1, int(args.patience))
     epochs_without_improvement = 0
     history_entries = [] if is_main else None
 

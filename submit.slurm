@@ -18,6 +18,7 @@ SEED="${SEED:-42}"
 LOSS_WEIGHT_NLL="${LOSS_WEIGHT_NLL:-0.5}"
 LOSS_WEIGHT_MSE="${LOSS_WEIGHT_MSE:-0.25}"
 LOSS_WEIGHT_MAE="${LOSS_WEIGHT_MAE:-0.25}"
+PATIENCE="${PATIENCE:-20}"
 
 for MODEL_NAME in ${MODELS}; do
     FOLDER_NAME="${MODEL_NAME}_bs${BATCH_SIZE}_seed${SEED}_nll${LOSS_WEIGHT_NLL}_mse${LOSS_WEIGHT_MSE}_mae${LOSS_WEIGHT_MAE}"
@@ -32,6 +33,7 @@ for MODEL_NAME in ${MODELS}; do
         --epochs 40 \
         --seed "${SEED}" \
         --lr 0.0003 \
+        --patience "${PATIENCE}" \
         --no-stratified-user-split \
         --loss-weight-nll "${LOSS_WEIGHT_NLL}" \
         --loss-weight-mse "${LOSS_WEIGHT_MSE}" \

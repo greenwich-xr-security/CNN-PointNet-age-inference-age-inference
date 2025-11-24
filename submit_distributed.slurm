@@ -39,6 +39,7 @@ SEED="${SEED:-42}"
 LOSS_WEIGHT_NLL="${LOSS_WEIGHT_NLL:-0.5}"
 LOSS_WEIGHT_MSE="${LOSS_WEIGHT_MSE:-0.25}"
 LOSS_WEIGHT_MAE="${LOSS_WEIGHT_MAE:-0.25}"
+PATIENCE="${PATIENCE:-20}"
 MODELS="${MODELS:-${MODEL:-b0 b1 b2 b3 b4 b5 b6}}"
 
 for MODEL_NAME in ${MODELS}; do
@@ -60,6 +61,7 @@ for MODEL_NAME in ${MODELS}; do
     --lr 3e-4 \
     --num-workers 8 \
     --seed "${SEED}" \
+    --patience "${PATIENCE}" \
     --no-stratified-user-split \
     --loss-weight-nll "${LOSS_WEIGHT_NLL}" \
     --loss-weight-mse "${LOSS_WEIGHT_MSE}" \
