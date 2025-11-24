@@ -407,7 +407,15 @@ def load_archive_metadata(root: Optional[PathLike] = None) -> pd.DataFrame:
 
 def load_handrgbd_metadata(root: Optional[PathLike] = None) -> pd.DataFrame:
     dataset_root = _resolve_root(root)
-    rgb_root = dataset_root / "handRGBD" / "rgb"
+    hand_root = dataset_root / "handRGBD"
+    rgb_root = hand_root / "rgb_jpg"
+    if not rgb_root.exists():
+        alt_root = hand_root / "rgb"
+        if alt_root.exists():
+            rgb_root = alt_root
+    if not rgb_root.exists():
+        print(f"[handRGBD] RGB folder not found (tried 'rgb_jpg' and 'rgb' under {hand_root})")
+        return pd.DataFrame(columns=["source", "user_id", "age", "gender", "aspect", "image_path", "bbox"])
     metadata_csv = dataset_root / "handRGBD" / "reference_table.csv"
 
     empty_cols = ["source", "user_id", "age", "gender", "aspect", "image_path", "bbox"]
@@ -433,9 +441,16 @@ def load_handrgbd_metadata(root: Optional[PathLike] = None) -> pd.DataFrame:
         name_str = str(name_val).strip()
         if not name_str:
             return None
-        filename = name_str if name_str.lower().endswith(".png") else f"{name_str}.png"
-        candidate = rgb_root / filename
-        return candidate if candidate.is_file() else None
+        candidates = []
+        if any(name_str.lower().endswith(ext) for ext in (".png", ".jpg", ".jpeg")):
+            candidates.append(rgb_root / name_str)
+        else:
+            candidates.append(rgb_root / f"{name_str}.png")
+            candidates.append(rgb_root / f"{name_str}.jpg")
+        for candidate in candidates:
+            if candidate.is_file():
+                return candidate
+        return None
 
     working_df["image_path"] = working_df["name"].apply(resolve_path)
     working_df = working_df[working_df["image_path"].notna()]
