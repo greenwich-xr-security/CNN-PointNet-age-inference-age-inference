@@ -159,6 +159,9 @@ class DisplayUtils:
         plt.figure(figsize=(6, 6))
         plt.scatter(targets_arr, preds_arr, s=point_size, alpha=alpha, edgecolors='none')
         plt.plot([axis_min, axis_max], [axis_min, axis_max], 'r--', linewidth=1)
+        for thr in (18.0, 25.0):
+            plt.axvline(thr, color="black", linestyle=":", linewidth=1)
+            plt.axhline(thr, color="black", linestyle=":", linewidth=1)
         plt.xlabel('True Age')
         plt.ylabel('Predicted Age')
         if title:
@@ -226,6 +229,9 @@ class DisplayUtils:
         fig, ax = plt.subplots(figsize=(6, 6))
         ax.scatter(targets_arr, preds_arr, s=point_size, alpha=alpha, edgecolors="none")
         ax.plot([axis_min, axis_max], [axis_min, axis_max], "r--", linewidth=1)
+        for thr in (18.0, 25.0):
+            ax.axvline(thr, color="black", linestyle=":", linewidth=1)
+            ax.axhline(thr, color="black", linestyle=":", linewidth=1)
         ax.set_xlabel("True Age")
         ax.set_ylabel("Predicted Age")
         if title:
