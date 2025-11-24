@@ -407,7 +407,7 @@ def load_archive_metadata(root: Optional[PathLike] = None) -> pd.DataFrame:
 
 def load_handrgbd_metadata(root: Optional[PathLike] = None) -> pd.DataFrame:
     dataset_root = _resolve_root(root)
-    rgb_root = dataset_root / "handRGBD" / "rgb_jpg"
+    rgb_root = dataset_root / "handRGBD" / "rgb"
     metadata_csv = dataset_root / "handRGBD" / "reference_table.csv"
 
     empty_cols = ["source", "user_id", "age", "gender", "aspect", "image_path", "bbox"]
@@ -433,7 +433,7 @@ def load_handrgbd_metadata(root: Optional[PathLike] = None) -> pd.DataFrame:
         name_str = str(name_val).strip()
         if not name_str:
             return None
-        filename = name_str if name_str.lower().endswith(".jpg") else f"{name_str}.jpg"
+        filename = name_str if name_str.lower().endswith(".png") else f"{name_str}.png"
         candidate = rgb_root / filename
         return candidate if candidate.is_file() else None
 
@@ -513,98 +513,6 @@ def load_combined_metadata(root: Optional[PathLike] = None) -> pd.DataFrame:
     combined = combined.drop_duplicates(subset="image_path")
     combined = _limit_users_per_age(combined, max_users_per_year=15)
     return combined.reset_index(drop=True)
-
-
-def load_handrgbd_metadata(
-    root: Optional[PathLike] = None,
-    *,
-    aspect_filter: Optional[Union[str, list[str], tuple[str, ...]]] = None,
-) -> pd.DataFrame:
-    """Load metadata for the handRGBD dataset (RGB + XYZ EXR pairs).
-
-    Returns rows with existing RGB/EXR files and normalised labels.
-    aspect_filter can be a single string or list/tuple; values matching a full
-    aspect label (e.g., "dorsal right") or a keyword ("dorsal") are kept.
-    """
-    dataset_root = _resolve_root(root)
-    hand_root = dataset_root / "handRGBD"
-    csv_path = hand_root / "reference_table.csv"
-    rgb_dir = hand_root / "rgb"
-    xyz_dir = hand_root / "xyz"
-
-    if not csv_path.exists():
-        raise FileNotFoundError(f"handRGBD reference CSV not found: {csv_path}")
-
-    raw_df = pd.read_csv(csv_path)
-    required_cols = ["user_id", "age", "gender", "aspect", "name", "lights", "wall"]
-    missing_cols = [c for c in required_cols if c not in raw_df.columns]
-    if missing_cols:
-        raise ValueError(f"handRGBD CSV missing required columns: {missing_cols}")
-
-    working_df = raw_df[required_cols].copy()
-    working_df["aspect_norm"] = working_df["aspect"].apply(_normalise_label)
-    working_df = working_df[working_df["aspect_norm"].notna()]
-
-    working_df["gender_norm"] = working_df["gender"].apply(_normalise_gender)
-    working_df["age_norm"] = working_df["age"].apply(lambda x: int(x) if pd.notna(x) else pd.NA)
-
-    working_df["rgb_path"] = working_df["name"].apply(lambda n: rgb_dir / f"{n}.png")
-    working_df["xyz_path"] = working_df["name"].apply(lambda n: xyz_dir / f"{n}.exr")
-
-    file_mask = working_df["rgb_path"].apply(Path.exists) & working_df["xyz_path"].apply(Path.exists)
-    missing_count = int((~file_mask).sum())
-    if missing_count:
-        print(f"[handRGBD] Skipping {missing_count} entries with missing RGB or EXR files.")
-    working_df = working_df[file_mask]
-
-    if aspect_filter is not None:
-        if isinstance(aspect_filter, str):
-            requested = [aspect_filter]
-        else:
-            requested = list(aspect_filter)
-        canonical: set[str] = set()
-        keywords: set[str] = set()
-        for raw in requested:
-            if raw is None:
-                continue
-            norm = _normalise_label(raw)
-            if norm:
-                canonical.add(norm)
-                continue
-            raw_lower = str(raw).strip().lower()
-            if raw_lower:
-                keywords.add(raw_lower)
-
-        def _aspect_matches(val: str) -> bool:
-            if val in canonical:
-                return True
-            return any(key in val for key in keywords)
-
-        before = len(working_df)
-        working_df = working_df[working_df["aspect_norm"].apply(_aspect_matches)]
-        print(f"[handRGBD] Aspect filter kept {len(working_df)} / {before} rows.")
-
-    df_out = pd.DataFrame(
-        {
-            "source": "handRGBD",
-            "user_id": working_df["user_id"].apply(lambda u: f"handrgbd_{int(u)}"),
-            "age": working_df["age_norm"],
-            "gender": working_df["gender_norm"],
-            "aspect": working_df["aspect_norm"],
-            "lights": working_df["lights"],
-            "wall": working_df["wall"],
-            "name": working_df["name"],
-            "rgb_path": working_df["rgb_path"],
-            "xyz_path": working_df["xyz_path"],
-            # keep compatibility with existing datasets
-            "image_path": working_df["rgb_path"],
-        }
-    )
-    df_out = df_out.reset_index(drop=True)
-    print(
-        f"handRGBD dataset -> users: {df_out['user_id'].nunique()} | pairs: {len(df_out)}"
-    )
-    return df_out
 
 
 # ---------------------------------------------------------------------------
