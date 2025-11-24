@@ -8,11 +8,17 @@ from __future__ import annotations
 
 import os
 from pathlib import Path
-from typing import Dict, Optional, Union
+from typing import Dict, Optional, Tuple, Union
 
+import cv2
+import numpy as np
 import pandas as pd
 from PIL import Image, UnidentifiedImageError
 from torch.utils.data import Dataset
+from handLandmarks.handLandmarksDetection import (
+    MediaPipeTaskHandLandmarkDetector,
+    SentisHandLandmarkDetector,
+)
 
 # Base directory (can be overridden via env var or function argument)
 _DEFAULT_ROOT = Path(r"C:\Users\Staff\OneDrive - University of Greenwich\HandsDatasets")
