@@ -597,8 +597,8 @@ def main() -> None:
             tprs = gate_results["case1"]["tpr"]
             taus = gate_results["case1"]["thresholds"]
 
-            dist = np.sqrt((fprs - 0.0) ** 2 + (tprs - 1.0) ** 2)
-            idx_best = int(np.argmin(dist))
+            dist_metric = np.sqrt((fprs - 0.0) ** 2 + (tprs - 1.0) ** 2)
+            idx_best = int(np.argmin(dist_metric))
             idx_fpr = int(np.argmin(np.abs(fprs - 0.1)))
             idx_tpr = int(np.argmin(np.abs(tprs - 0.9)))
 
