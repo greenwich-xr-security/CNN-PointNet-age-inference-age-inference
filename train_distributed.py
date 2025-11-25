@@ -289,7 +289,7 @@ def build_dataloaders(
         sampler=train_sampler,
         num_workers=num_workers,
         pin_memory=pin_memory,
-        drop_last=False,
+        drop_last=True,
         persistent_workers=num_workers > 0,
         collate_fn=multimodal_collate,
     )

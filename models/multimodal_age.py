@@ -1,7 +1,7 @@
 from __future__ import annotations
 
-from dataclasses import dataclass, field
-from typing import Any, Dict, Optional
+from dataclasses import dataclass
+from typing import Optional
 
 import torch
 import torch.nn as nn
@@ -10,12 +10,12 @@ from torchvision import models
 from .efficientnet_age import get_default_efficientnet_weights
 
 try:
-    from open3d.ml.torch.models import PointNet2
+    from pointnet.model import PointNetCls
 except Exception as exc:  # noqa: BLE001
-    PointNet2 = None
-    _POINTNET2_IMPORT_ERROR = exc
+    PointNetCls = None
+    _POINTNET_IMPORT_ERROR = exc
 else:
-    _POINTNET2_IMPORT_ERROR = None
+    _POINTNET_IMPORT_ERROR = None
 
 
 def _build_resnet_encoder(backbone: str, latent_dim: int, pretrained: bool = True) -> nn.Module:
@@ -85,26 +85,18 @@ class RgbEncoder(nn.Module):
         return self.backbone(images)
 
 
-class PointNet2Encoder(nn.Module):
-    """PointNet++ encoder wrapper from Open3D that outputs a latent vector."""
+class PointNetEncoder(nn.Module):
+    """PointNet encoder wrapper using pointnet.pytorch (classification head as latent)."""
 
-    def __init__(
-        self,
-        latent_dim: int = 256,
-        *,
-        pointnet_kwargs: Optional[Dict[str, Any]] = None,
-    ):
+    def __init__(self, latent_dim: int = 256):
         super().__init__()
-        if PointNet2 is None:
+        if PointNetCls is None:
             raise ImportError(
-                "open3d PointNet2 unavailable. Install open3d>=0.17 and ensure open3d.ml is importable."
-            ) from _POINTNET2_IMPORT_ERROR
-
-        kwargs = {"in_channels": 0, "num_classes": latent_dim, "use_xyz": True}
-        if pointnet_kwargs:
-            kwargs.update(pointnet_kwargs)
-        self.model = PointNet2(**kwargs)
+                "pointnet.pytorch not available. Install https://github.com/fxia22/pointnet.pytorch"
+            ) from _POINTNET_IMPORT_ERROR
         self.latent_dim = latent_dim
+        # PointNetCls expects k=number of classes; we repurpose it as latent_dim.
+        self.backbone = PointNetCls(k=latent_dim)
 
     def forward(self, points: torch.Tensor) -> torch.Tensor:
         """
@@ -116,15 +108,10 @@ class PointNet2Encoder(nn.Module):
         if points.shape[-1] != 3 and points.shape[1] != 3:
             raise ValueError(f"Expected XYZ coordinates in last or channel dim, got shape {points.shape}.")
 
-        if points.shape[1] == 3:
+        if points.shape[1] != 3:
             points = points.transpose(1, 2)  # (B, 3, N)
 
-        logits = self.model(points)
-        if isinstance(logits, dict):
-            # Open3D returns dict for some tasks; prefer logits/cls_logits keys.
-            logits = logits.get("logits", logits.get("cls_logits", None))
-        if logits is None:
-            raise RuntimeError("PointNet2 forward returned None; check input formatting.")
+        logits, _, _ = self.backbone(points)
         return logits
 
 
@@ -156,7 +143,6 @@ class FusionConfig:
     pretrained_rgb: bool = True
     head_hidden_dim: int = 256
     head_dropout: float = 0.1
-    pointnet_kwargs: Dict[str, Any] = field(default_factory=dict)
 
     def validate(self):
         if not (self.use_rgb or self.use_point_cloud):
@@ -185,10 +171,7 @@ class MultimodalAgeRegressor(nn.Module):
             self.rgb_encoder = None
 
         if config.use_point_cloud:
-            self.pc_encoder = PointNet2Encoder(
-                latent_dim=config.pc_latent_dim,
-                pointnet_kwargs=config.pointnet_kwargs,
-            )
+            self.pc_encoder = PointNetEncoder(latent_dim=config.pc_latent_dim)
             input_dim += config.pc_latent_dim
         else:
             self.pc_encoder = None

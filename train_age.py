@@ -163,6 +163,9 @@ class AgeDataset(Dataset):
         if coords.ndim != 2 or coords.shape[1] < 3:
             raise RuntimeError(f"Point cloud has unexpected shape {coords.shape}")
         coords = coords[:, :3].astype(np.float32)
+        # Remove non-finite points
+        finite_mask = np.isfinite(coords).all(axis=1)
+        coords = coords[finite_mask]
         if coords.shape[0] == 0:
             raise RuntimeError(f"Point cloud empty: {xyz_path}")
 
@@ -181,6 +184,8 @@ class AgeDataset(Dataset):
             coords = coords / max_norm
         if self.pc_jitter_std > 0:
             coords = coords + np.random.normal(scale=self.pc_jitter_std, size=coords.shape).astype(np.float32)
+        # Final guard against numerical issues
+        coords = np.nan_to_num(coords, nan=0.0, posinf=0.0, neginf=0.0)
         return torch.from_numpy(coords)
 
     def __getitem__(self, idx):
@@ -555,6 +560,7 @@ def main() -> None:
         shuffle=True,
         num_workers=0,
         collate_fn=multimodal_collate,
+        drop_last=True,
     )
     test_loader = DataLoader(
         test_ds,

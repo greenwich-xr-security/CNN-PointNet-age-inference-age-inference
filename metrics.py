@@ -49,6 +49,9 @@ def weighted_regression_loss(
     weights: LossWeights,
 ) -> torch.Tensor:
     """Return weighted combination of Gaussian NLL, MSE, and MAE components."""
+    # Clamp log-variance to keep variance in a stable, positive range.
+    pred_log_var = torch.clamp(pred_log_var, min=-10.0, max=10.0)
+
     total_loss: torch.Tensor | None = None
     if weights.nll > 0:
         nll = gaussian_nll_loss(pred_mean, pred_log_var, target)
