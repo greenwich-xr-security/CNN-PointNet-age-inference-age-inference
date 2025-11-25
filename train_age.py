@@ -16,16 +16,17 @@ from tqdm import tqdm
 from hands_dataset import get_dataset_root, load_combined_metadata, set_dataset_root
 from displayUtils import DisplayUtils
 from metrics import LossWeights, weighted_regression_loss
-from models import EFFICIENTNET_IMG_SIZES, EfficientNetAgeRegressor
+from models import EFFICIENTNET_IMG_SIZES, FusionConfig, build_age_model
 
-# Example (Windows): python train_age.py --data-root "C:\Users\Staff\OneDrive - University of Greenwich\HandsDatasets" --output-dir runs\b4_efficientnet --model b4 --img-size 380 --batch-size 32 --epochs 40 --seed 42 --lr 0.0003
+# Example (Windows): python train_age.py --data-root "C:\Users\Staff\OneDrive - University of Greenwich\HandsDatasets" --output-dir runs\\multimodal --img-size 224 --batch-size 32 --epochs 40 --seed 42 --lr 0.0003 --use-pointcloud
 
 # --- Config -----------------------------------------------------------------
 DEFAULT_BATCH_SIZE = 32
 DEFAULT_EPOCHS = 40
 DEFAULT_LR = 3e-4
-DEFAULT_MODEL_VARIANT = "b7"
 DEFAULT_SEED = 42
+DEFAULT_IMG_SIZE = 224
+DEFAULT_NUM_POINTS = 2048
 DEVICE = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 DEFAULT_PATIENCE = 20
 
@@ -37,9 +38,11 @@ def set_random_seed(seed: int) -> None:
         torch.cuda.manual_seed_all(seed)
 
 
-def filter_metadata(df: pd.DataFrame) -> pd.DataFrame:
+def filter_metadata(df: pd.DataFrame, *, require_xyz: bool = False) -> pd.DataFrame:
     df = df[df["aspect"].str.contains("dorsal", case=False, na=False)]
     df = df[df["age"].notna()]
+    if require_xyz:
+        df = df[df["xyz_path"].notna()]
     df = df.copy()
     df["age"] = df["age"].astype(float)
     return df.reset_index(drop=True)
@@ -86,20 +89,30 @@ def stratified_user_split(
 
 
 class AgeDataset(Dataset):
-    def __init__(self, records: pd.DataFrame, transform=None):
+    def __init__(
+        self,
+        records: pd.DataFrame,
+        *,
+        use_rgb: bool = True,
+        use_pointcloud: bool = False,
+        transform=None,
+        num_points: int = DEFAULT_NUM_POINTS,
+        pc_jitter_std: float = 0.0,
+    ):
         self.records = records.reset_index(drop=True)
         self.transform = transform
+        self.use_rgb = use_rgb
+        self.use_pointcloud = use_pointcloud
+        self.num_points = num_points
+        self.pc_jitter_std = pc_jitter_std
 
     def __len__(self):
         return len(self.records)
 
-    def __getitem__(self, idx):
-        row = self.records.iloc[idx]
+    def _load_image(self, row):
         image_path: Path = row["image_path"]
-        age = float(row["age"])
         image = Image.open(image_path).convert("RGB")
 
-        # Optional: crop to square bbox with padding if available
         bbox = row.get("bbox")
         if isinstance(bbox, (list, tuple)) and len(bbox) == 4:
             try:
@@ -110,7 +123,6 @@ class AgeDataset(Dataset):
                         (xmin, ymin, xmax, ymax)
                     )
 
-                    # compute required padding to keep crop inside image bounds
                     pad_left = max(0, -sq_xmin)
                     pad_top = max(0, -sq_ymin)
                     pad_right = max(0, sq_xmax - w)
@@ -122,24 +134,61 @@ class AgeDataset(Dataset):
                             border=(pad_left, pad_top, pad_right, pad_bottom),
                             fill=(0, 0, 0),
                         )
-                        # shift square bbox into padded image coords
                         sq_xmin += pad_left
                         sq_xmax += pad_left
                         sq_ymin += pad_top
                         sq_ymax += pad_top
 
-                    # final safety clamp then crop
                     sq_xmin = max(0, sq_xmin)
                     sq_ymin = max(0, sq_ymin)
                     sq_xmax = max(sq_xmin + 1, min(image.size[0], sq_xmax))
                     sq_ymax = max(sq_ymin + 1, min(image.size[1], sq_ymax))
                     image = image.crop((sq_xmin, sq_ymin, sq_xmax, sq_ymax))
             except Exception:
-                # If anything goes wrong with bbox handling, fall back to full image
                 pass
         if self.transform:
             image = self.transform(image)
-        return image, torch.tensor(age, dtype=torch.float32)
+        return image
+
+    def _load_points(self, row) -> torch.Tensor:
+        xyz_path = row.get("xyz_path")
+        if xyz_path is None or pd.isna(xyz_path):
+            raise RuntimeError("Point cloud requested but xyz_path missing.")
+        xyz_path = Path(xyz_path)
+        if not xyz_path.is_file():
+            raise RuntimeError(f"Point cloud file not found: {xyz_path}")
+        coords = np.load(xyz_path, allow_pickle=False)
+        if coords.ndim == 3 and coords.shape[-1] >= 3:
+            coords = coords.reshape(-1, coords.shape[-1])
+        if coords.ndim != 2 or coords.shape[1] < 3:
+            raise RuntimeError(f"Point cloud has unexpected shape {coords.shape}")
+        coords = coords[:, :3].astype(np.float32)
+        if coords.shape[0] == 0:
+            raise RuntimeError(f"Point cloud empty: {xyz_path}")
+
+        n_points = coords.shape[0]
+        target = max(1, int(self.num_points))
+        if n_points >= target:
+            idx = np.random.choice(n_points, target, replace=False)
+        else:
+            idx = np.random.choice(n_points, target, replace=True)
+        coords = coords[idx]
+
+        coords = coords - np.mean(coords, axis=0, keepdims=True)
+        norms = np.linalg.norm(coords, axis=1, keepdims=True)
+        max_norm = float(np.max(norms)) if norms.size else 1.0
+        if max_norm > 0:
+            coords = coords / max_norm
+        if self.pc_jitter_std > 0:
+            coords = coords + np.random.normal(scale=self.pc_jitter_std, size=coords.shape).astype(np.float32)
+        return torch.from_numpy(coords)
+
+    def __getitem__(self, idx):
+        row = self.records.iloc[idx]
+        age = float(row["age"])
+        image = self._load_image(row) if self.use_rgb else None
+        points = self._load_points(row) if self.use_pointcloud else None
+        return image, points, torch.tensor(age, dtype=torch.float32)
 
 
 def compute_adult_probabilities(
@@ -255,6 +304,22 @@ def compute_age_gate_curves(
     return results
 
 
+def multimodal_collate(batch):
+    images = [b[0] for b in batch]
+    points = [b[1] for b in batch]
+    ages = torch.stack([b[2] for b in batch])
+
+    image_tensor = None
+    point_tensor = None
+
+    if images and images[0] is not None:
+        image_tensor = torch.stack(images)
+    if points and points[0] is not None:
+        point_tensor = torch.stack(points)
+
+    return image_tensor, point_tensor, ages
+
+
 def build_transforms(img_size: int):
     train_transform = transforms.Compose([
         transforms.RandomResizedCrop(img_size, scale=(0.7, 1.0)),
@@ -275,7 +340,7 @@ def build_transforms(img_size: int):
 
 
 def main() -> None:
-    parser = argparse.ArgumentParser(description="Train EfficientNet hand age regressor.")
+    parser = argparse.ArgumentParser(description="Train multimodal hand age regressor (RGB / PointCloud).")
     parser.add_argument(
         "--data-root",
         type=str,
@@ -289,17 +354,10 @@ def main() -> None:
         help="Directory where checkpoints and plots will be saved.",
     )
     parser.add_argument(
-        "--model",
-        type=str,
-        default=DEFAULT_MODEL_VARIANT,
-        choices=sorted(EFFICIENTNET_IMG_SIZES.keys()),
-        help="EfficientNet variant to use (default: b7).",
-    )
-    parser.add_argument(
         "--img-size",
         type=int,
-        default=None,
-        help="Override the input resolution (discouraged). By default the canonical size for the chosen model is used.",
+        default=DEFAULT_IMG_SIZE,
+        help=f"Input resolution for RGB branch (default: {DEFAULT_IMG_SIZE}).",
     )
     parser.add_argument(
         "--batch-size",
@@ -354,6 +412,59 @@ def main() -> None:
         default=DEFAULT_PATIENCE,
         help=f"Early stopping patience in epochs (default: {DEFAULT_PATIENCE}).",
     )
+    parser.add_argument(
+        "--no-rgb",
+        action="store_true",
+        help="Disable RGB branch (point cloud only).",
+    )
+    parser.add_argument(
+        "--use-pointcloud",
+        action="store_true",
+        help="Enable point cloud branch (requires xyz_npy files).",
+    )
+    parser.add_argument(
+        "--rgb-backbone",
+        type=str,
+        default="resnet18",
+        choices=["resnet18", "resnet34", "resnet50"] + [f"efficientnet_{k}" for k in EFFICIENTNET_IMG_SIZES.keys()],
+        help="RGB backbone for the CNN encoder (default: resnet18).",
+    )
+    parser.add_argument(
+        "--rgb-latent-dim",
+        type=int,
+        default=256,
+        help="Latent dimensionality for the RGB encoder (default: 256).",
+    )
+    parser.add_argument(
+        "--pc-latent-dim",
+        type=int,
+        default=256,
+        help="Latent dimensionality for the point cloud encoder (default: 256).",
+    )
+    parser.add_argument(
+        "--head-hidden-dim",
+        type=int,
+        default=256,
+        help="Hidden size of the fusion MLP head (default: 256).",
+    )
+    parser.add_argument(
+        "--head-dropout",
+        type=float,
+        default=0.1,
+        help="Dropout for the fusion head (default: 0.1).",
+    )
+    parser.add_argument(
+        "--num-points",
+        type=int,
+        default=DEFAULT_NUM_POINTS,
+        help=f"Number of points to sample from each point cloud (default: {DEFAULT_NUM_POINTS}).",
+    )
+    parser.add_argument(
+        "--pc-jitter-std",
+        type=float,
+        default=0.0,
+        help="Gaussian jitter stddev applied to point clouds (default: 0.0).",
+    )
     args = parser.parse_args()
 
     loss_weights = LossWeights(
@@ -364,14 +475,12 @@ def main() -> None:
     loss_weights.validate()
 
     set_random_seed(args.seed)
-    model_variant = args.model.lower()
-    default_size = EFFICIENTNET_IMG_SIZES[model_variant]
-    if args.img_size is not None and args.img_size != default_size:
-        print(
-            f"[train] Ignoring requested --img-size {args.img_size}; "
-            f"EfficientNet-{model_variant.upper()} uses {default_size}."
-        )
-    img_size = default_size
+    use_rgb = not args.no_rgb
+    use_pointcloud = args.use_pointcloud
+    if not use_rgb and not use_pointcloud:
+        raise ValueError("At least one modality must be enabled (RGB and/or point cloud).")
+
+    img_size = int(args.img_size)
 
     if args.data_root:
         set_dataset_root(args.data_root)
@@ -380,9 +489,14 @@ def main() -> None:
     output_dir = Path(args.output_dir).expanduser()
     output_dir.mkdir(parents=True, exist_ok=True)
 
-    train_transform, test_transform = build_transforms(img_size)
+    train_transform = test_transform = None
+    if use_rgb:
+        train_transform, test_transform = build_transforms(img_size)
 
-    metadata = filter_metadata(load_combined_metadata(root=active_root))
+    metadata = filter_metadata(
+        load_combined_metadata(root=active_root),
+        require_xyz=use_pointcloud,
+    )
     if args.no_stratified_user_split:
         user_ids = metadata["user_id"].unique()
         train_ids, test_ids = train_test_split(user_ids, test_size=0.2, random_state=args.seed)
@@ -395,12 +509,16 @@ def main() -> None:
     train_meta = metadata[metadata["user_id"].isin(train_ids)]
     test_meta = metadata[metadata["user_id"].isin(test_ids)]
 
+    if use_pointcloud and (train_meta.empty or test_meta.empty):
+        raise ValueError("Point cloud branch enabled but dataset split is empty; check xyz_npy availability.")
+
     print(
         f"Using dataset root: {active_root}\n"
         f"Saving artifacts to: {output_dir}\n"
         f"Train users: {train_meta['user_id'].nunique()} | Train images: {len(train_meta)}\n"
         f"Test users:  {test_meta['user_id'].nunique()} | Test images:  {len(test_meta)}\n"
-        f"Model: EfficientNet-{model_variant.upper()} | Image size: {img_size} | Batch size: {args.batch_size}\n"
+        f"Modalities: {'RGB' if use_rgb else ''}{' + ' if use_rgb and use_pointcloud else ''}{'PointCloud' if use_pointcloud else ''} | "
+        f"Image size: {img_size} | Points: {args.num_points} | Batch size: {args.batch_size}\n"
         f"Epochs: {args.epochs} | Learning rate: {args.lr:.2e} | Seed: {args.seed}"
     )
     print(
@@ -414,13 +532,47 @@ def main() -> None:
     )
     print(f"Split mode: {split_desc}")
 
-    train_ds = AgeDataset(train_meta, transform=train_transform)
-    test_ds = AgeDataset(test_meta, transform=test_transform)
+    train_ds = AgeDataset(
+        train_meta,
+        use_rgb=use_rgb,
+        use_pointcloud=use_pointcloud,
+        transform=train_transform,
+        num_points=args.num_points,
+        pc_jitter_std=args.pc_jitter_std,
+    )
+    test_ds = AgeDataset(
+        test_meta,
+        use_rgb=use_rgb,
+        use_pointcloud=use_pointcloud,
+        transform=test_transform,
+        num_points=args.num_points,
+        pc_jitter_std=0.0,
+    )
 
-    train_loader = DataLoader(train_ds, batch_size=args.batch_size, shuffle=True, num_workers=0)
-    test_loader = DataLoader(test_ds, batch_size=args.batch_size, shuffle=False, num_workers=0)
+    train_loader = DataLoader(
+        train_ds,
+        batch_size=args.batch_size,
+        shuffle=True,
+        num_workers=0,
+        collate_fn=multimodal_collate,
+    )
+    test_loader = DataLoader(
+        test_ds,
+        batch_size=args.batch_size,
+        shuffle=False,
+        num_workers=0,
+        collate_fn=multimodal_collate,
+    )
 
-    model = EfficientNetAgeRegressor(model_variant)
+    model = build_age_model(
+        use_rgb=use_rgb,
+        use_point_cloud=use_pointcloud,
+        rgb_backbone=args.rgb_backbone,
+        rgb_latent_dim=args.rgb_latent_dim,
+        pc_latent_dim=args.pc_latent_dim,
+        head_hidden_dim=args.head_hidden_dim,
+        head_dropout=args.head_dropout,
+    )
     if DEVICE.type == "cuda":
         gpu_count = torch.cuda.device_count()
         if gpu_count > 1:
@@ -429,8 +581,15 @@ def main() -> None:
     model = model.to(DEVICE)
     optimizer = torch.optim.AdamW(model.parameters(), lr=args.lr)
 
+    modalities = []
+    if use_rgb:
+        modalities.append("rgb")
+    if use_pointcloud:
+        modalities.append("pc")
+    model_tag = "+".join(modalities) if modalities else "unknown"
+
     best_val_loss = float("inf")
-    best_model_path = output_dir / f"efficientnet_{model_variant}_age_regressor.pth"
+    best_model_path = output_dir / f"{model_tag}_age_regressor.pth"
     history_log_path = output_dir / "history.log"
     min_delta = 0.001
     patience = max(1, int(args.patience))
@@ -443,10 +602,14 @@ def main() -> None:
         running_mae = 0.0
         running_mse = 0.0
         running_std = 0.0
-        for images, ages in tqdm(train_loader, desc=f"Epoch {epoch}/{args.epochs}"):
-            images, ages = images.to(DEVICE), ages.to(DEVICE)
+        for images, points, ages in tqdm(train_loader, desc=f"Epoch {epoch}/{args.epochs}"):
+            if images is not None:
+                images = images.to(DEVICE)
+            if points is not None:
+                points = points.to(DEVICE)
+            ages = ages.to(DEVICE)
             optimizer.zero_grad()
-            pred_mean, pred_log_var = model(images)
+            pred_mean, pred_log_var = model(images=images, points=points)
             loss = weighted_regression_loss(pred_mean, pred_log_var, ages, loss_weights)
             loss.backward()
             optimizer.step()
@@ -473,9 +636,13 @@ def main() -> None:
         val_predictions = []
         val_log_vars = []
         with torch.no_grad():
-            for images, ages in test_loader:
-                images, ages = images.to(DEVICE), ages.to(DEVICE)
-                pred_mean, pred_log_var = model(images)
+            for images, points, ages in test_loader:
+                if images is not None:
+                    images = images.to(DEVICE)
+                if points is not None:
+                    points = points.to(DEVICE)
+                ages = ages.to(DEVICE)
+                pred_mean, pred_log_var = model(images=images, points=points)
                 batch_loss = weighted_regression_loss(pred_mean, pred_log_var, ages, loss_weights).item()
                 val_loss += batch_loss
                 val_mae += torch.mean(torch.abs(pred_mean - ages)).item()
