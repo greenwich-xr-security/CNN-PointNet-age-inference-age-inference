@@ -47,7 +47,7 @@ for RGB_BB in ${RGB_BACKBONES}; do
             fi
 
             FOLDER_NAME="${FOLDER_TAG}_rgb${RGB_BB}_bs${BATCH_SIZE}_seed${SEED}_nll${LOSS_WEIGHT_NLL}_mse${LOSS_WEIGHT_MSE}_mae${LOSS_WEIGHT_MAE}"
-            OUTPUT_DIR="/home/rb3434w/CNN-age-inference/runs/${FOLDER_NAME}"
+            OUTPUT_DIR="/home/rb3434w/CNN-PointNet-age-inference-age-inference/runs/${FOLDER_NAME}"
 
             echo ">>> Starting training (${MODALITY}${PTS:+, pts=${PTS}}, rgb=${RGB_BB}) -> ${OUTPUT_DIR}"
             python train_age.py \

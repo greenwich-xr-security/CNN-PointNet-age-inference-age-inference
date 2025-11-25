@@ -13,7 +13,7 @@ set -euo pipefail
 module load www-proxy
 module load CUDA
 
-PROJECT_ROOT="${PROJECT_ROOT:-$HOME/CNN-age-inference}"
+PROJECT_ROOT="${PROJECT_ROOT:-$HOME/CNN-PointNet-age-inference-age-inference}"
 VENV_PATH="${VENV_PATH:-${PROJECT_ROOT}/.venv}"
 DATA_ROOT="${DATA_ROOT:-/home/rb3434w/HandsDatasets}"
 OUTPUT_ROOT="${OUTPUT_ROOT:-${PROJECT_ROOT}/runs}"
