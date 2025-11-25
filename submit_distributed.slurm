@@ -36,17 +36,17 @@ export MASTER_ADDR MASTER_PORT
 
 BATCH_SIZE="${BATCH_SIZE:-32}"
 SEED="${SEED:-42}"
-LOSS_WEIGHT_NLL="${LOSS_WEIGHT_NLL:-0.5}"
-LOSS_WEIGHT_MSE="${LOSS_WEIGHT_MSE:-0.25}"
-LOSS_WEIGHT_MAE="${LOSS_WEIGHT_MAE:-0.25}"
-PATIENCE="${PATIENCE:-20}"
+LOSS_WEIGHT_NLL="${LOSS_WEIGHT_NLL:-0.9}"
+LOSS_WEIGHT_MSE="${LOSS_WEIGHT_MSE:-0.1}"
+LOSS_WEIGHT_MAE="${LOSS_WEIGHT_MAE:-0.1}"
+PATIENCE="${PATIENCE:-60}"
 IMG_SIZE="${IMG_SIZE:-}"
 # RGB backbone options: restrict to efficientnet_b0/b2/b4 for this sweep
-RGB_BACKBONES="${RGB_BACKBONES:-efficientnet_b0 efficientnet_b2 efficientnet_b4}"
+RGB_BACKBONES="${RGB_BACKBONES:-efficientnet_b1 efficientnet_b2 efficientnet_b4}"
 # Modalities: rgb | pc | fused
 MODALITIES="${MODALITIES:-rgb pc fused}"
 # Point counts to try when point clouds are enabled
-POINT_SIZES="${POINT_SIZES:-1024 2048 4096}"
+POINT_SIZES="${POINT_SIZES:-2048}"
 
 for RGB_BB in ${RGB_BACKBONES}; do
   for MODALITY in ${MODALITIES}; do
