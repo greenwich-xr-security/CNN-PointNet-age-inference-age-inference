@@ -437,7 +437,7 @@ def main() -> None:
             desc=f"[Rank {rank}] Epoch {epoch}/{args.epochs}",
             disable=not is_main,
         )
-        for images, points, ages in progress:
+        for images, points, ages, _user_ids in progress:
             if images is not None:
                 images = images.to(device, non_blocking=True)
             if points is not None:
