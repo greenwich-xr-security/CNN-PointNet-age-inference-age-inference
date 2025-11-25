@@ -18,7 +18,7 @@ LOSS_WEIGHT_NLL="${LOSS_WEIGHT_NLL:-0.5}"
 LOSS_WEIGHT_MSE="${LOSS_WEIGHT_MSE:-0.25}"
 LOSS_WEIGHT_MAE="${LOSS_WEIGHT_MAE:-0.25}"
 PATIENCE="${PATIENCE:-20}"
-IMG_SIZE="${IMG_SIZE:-224}"
+IMG_SIZE="${IMG_SIZE:-}"
 # RGB backbone options: restrict to efficientnet_b0/b2/b4 for this sweep
 RGB_BACKBONES="${RGB_BACKBONES:-efficientnet_b0 efficientnet_b2 efficientnet_b4}"
 # Modalities: rgb | pc | fused
@@ -46,7 +46,21 @@ for RGB_BB in ${RGB_BACKBONES}; do
                 FOLDER_TAG+="_pts${PTS}"
             fi
 
-            FOLDER_NAME="${FOLDER_TAG}_rgb${RGB_BB}_bs${BATCH_SIZE}_seed${SEED}_nll${LOSS_WEIGHT_NLL}_mse${LOSS_WEIGHT_MSE}_mae${LOSS_WEIGHT_MAE}"
+            # Pick image size based on EfficientNet variant if not explicitly provided
+            case "${RGB_BB}" in
+              efficientnet_b0) BB_IMG_SIZE=224 ;;
+              efficientnet_b1) BB_IMG_SIZE=240 ;;
+              efficientnet_b2) BB_IMG_SIZE=260 ;;
+              efficientnet_b3) BB_IMG_SIZE=300 ;;
+              efficientnet_b4) BB_IMG_SIZE=380 ;;
+              efficientnet_b5) BB_IMG_SIZE=456 ;;
+              efficientnet_b6) BB_IMG_SIZE=528 ;;
+              efficientnet_b7) BB_IMG_SIZE=600 ;;
+              *) BB_IMG_SIZE=224 ;;
+            esac
+            EFFECTIVE_IMG_SIZE="${IMG_SIZE:-${BB_IMG_SIZE}}"
+
+            FOLDER_NAME="${FOLDER_TAG}_rgb${RGB_BB}_img${EFFECTIVE_IMG_SIZE}_bs${BATCH_SIZE}_seed${SEED}_nll${LOSS_WEIGHT_NLL}_mse${LOSS_WEIGHT_MSE}_mae${LOSS_WEIGHT_MAE}"
             OUTPUT_DIR="/home/rb3434w/CNN-PointNet-age-inference-age-inference/runs/${FOLDER_NAME}"
 
             echo ">>> Starting training (${MODALITY}${PTS:+, pts=${PTS}}, rgb=${RGB_BB}) -> ${OUTPUT_DIR}"
@@ -62,7 +76,7 @@ for RGB_BB in ${RGB_BACKBONES}; do
                 --loss-weight-nll "${LOSS_WEIGHT_NLL}" \
                 --loss-weight-mse "${LOSS_WEIGHT_MSE}" \
                 --loss-weight-mae "${LOSS_WEIGHT_MAE}" \
-                --img-size "${IMG_SIZE}" \
+                --img-size "${EFFECTIVE_IMG_SIZE}" \
                 --rgb-backbone "${RGB_BB}" \
                 "${EXTRA_FLAGS[@]}"
             echo ">>> Finished training (${MODALITY}${PTS:+, pts=${PTS}}, rgb=${RGB_BB})"
