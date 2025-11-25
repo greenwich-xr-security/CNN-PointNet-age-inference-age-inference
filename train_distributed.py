@@ -466,9 +466,10 @@ def main() -> None:
         val_targets = []
         val_predictions = []
         val_log_vars = []
+        val_user_ids = []
 
         with torch.no_grad():
-            for images, points, ages in val_loader:
+            for images, points, ages, user_ids in val_loader:
                 if images is not None:
                     images = images.to(device, non_blocking=True)
                 if points is not None:
@@ -489,6 +490,7 @@ def main() -> None:
                 val_targets.extend(ages.detach().cpu().tolist())
                 val_predictions.extend(pred_mean.detach().cpu().tolist())
                 val_log_vars.extend(pred_log_var.detach().cpu().tolist())
+                val_user_ids.extend(user_ids)
 
         val_totals = all_reduce_metrics(
             device,
@@ -538,8 +540,9 @@ def main() -> None:
             targets_all = gather_all_lists(val_targets, world_size)
             preds_all = gather_all_lists(val_predictions, world_size)
             log_vars_all = gather_all_lists(val_log_vars, world_size)
+            user_ids_all = gather_all_lists(val_user_ids, world_size)
         else:
-            targets_all = preds_all = log_vars_all = None
+            targets_all = preds_all = log_vars_all = user_ids_all = None
 
         if save_best and is_main:
             model_to_save = ddp_model.module
@@ -566,6 +569,15 @@ def main() -> None:
                 np.asarray(log_vars_all, dtype=float),
                 age_threshold=18.0,
                 num_thresholds=201,
+            )
+
+            boxplot_path = output_dir / f"age_val_boxplot_epoch{epoch}_ddp.png"
+            DisplayUtils.save_per_user_boxplot(
+                user_ids=user_ids_all,
+                targets=targets_all,
+                predictions=preds_all,
+                save_path=boxplot_path,
+                title=f"Validation per-user box plot (epoch {epoch})",
             )
 
             preds_dump_path = output_dir / "best_val_predictions_ddp.npz"

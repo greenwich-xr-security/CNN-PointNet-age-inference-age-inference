@@ -191,9 +191,10 @@ class AgeDataset(Dataset):
     def __getitem__(self, idx):
         row = self.records.iloc[idx]
         age = float(row["age"])
+        user_id = row.get("user_id")
         image = self._load_image(row) if self.use_rgb else None
         points = self._load_points(row) if self.use_pointcloud else None
-        return image, points, torch.tensor(age, dtype=torch.float32)
+        return image, points, torch.tensor(age, dtype=torch.float32), user_id
 
 
 def compute_adult_probabilities(
@@ -313,6 +314,7 @@ def multimodal_collate(batch):
     images = [b[0] for b in batch]
     points = [b[1] for b in batch]
     ages = torch.stack([b[2] for b in batch])
+    user_ids = [b[3] for b in batch]
 
     image_tensor = None
     point_tensor = None
@@ -322,7 +324,7 @@ def multimodal_collate(batch):
     if points and points[0] is not None:
         point_tensor = torch.stack(points)
 
-    return image_tensor, point_tensor, ages
+    return image_tensor, point_tensor, ages, user_ids
 
 
 def build_transforms(img_size: int):
@@ -608,7 +610,7 @@ def main() -> None:
         running_mae = 0.0
         running_mse = 0.0
         running_std = 0.0
-        for images, points, ages in tqdm(train_loader, desc=f"Epoch {epoch}/{args.epochs}"):
+        for images, points, ages, _user_ids in tqdm(train_loader, desc=f"Epoch {epoch}/{args.epochs}"):
             if images is not None:
                 images = images.to(DEVICE)
             if points is not None:
@@ -641,8 +643,9 @@ def main() -> None:
         val_targets = []
         val_predictions = []
         val_log_vars = []
+        val_user_ids = []
         with torch.no_grad():
-            for images, points, ages in test_loader:
+            for images, points, ages, user_ids in test_loader:
                 if images is not None:
                     images = images.to(DEVICE)
                 if points is not None:
@@ -657,6 +660,7 @@ def main() -> None:
                 val_targets.extend(ages.detach().cpu().tolist())
                 val_predictions.extend(pred_mean.detach().cpu().tolist())
                 val_log_vars.extend(pred_log_var.detach().cpu().tolist())
+                val_user_ids.extend(user_ids)
 
         denom = max(1, len(test_loader))
         val_loss /= denom
@@ -704,6 +708,15 @@ def main() -> None:
                 alpha=0.6,
             ):
                 print(f"Saved best model to {best_model_path} (val_loss={val_loss:.4f}) and plot to {plot_path}")
+
+            boxplot_path = output_dir / f"age_val_boxplot_epoch{epoch}.png"
+            DisplayUtils.save_per_user_boxplot(
+                user_ids=val_user_ids,
+                targets=val_targets,
+                predictions=val_predictions,
+                save_path=boxplot_path,
+                title=f"Validation per-user box plot (epoch {epoch})",
+            )
 
             val_targets_arr = np.asarray(val_targets, dtype=float)
             val_means_arr = np.asarray(val_predictions, dtype=float)
@@ -794,6 +807,13 @@ def main() -> None:
             )
             print(f"Saved training history plot to {history_plot_path}")
             break
+
+    # Save bbox gallery using the metadata used for this run.
+    try:
+        gallery_meta = pd.concat([train_meta, test_meta], ignore_index=True)
+    except Exception:
+        gallery_meta = None
+    save_bbox_gallery(gallery_meta, output_dir / "bbox_gallery.png", max_users=20)
 
     print("Training complete. Best model saved on validation improvement.")
 

@@ -1,8 +1,10 @@
 import cv2
 import numpy as np
 from matplotlib import pyplot as plt
+from matplotlib.lines import Line2D
 from pathlib import Path
 from typing import Iterable, Optional, Tuple
+from collections import defaultdict
 
 
 class DisplayUtils:
@@ -210,7 +212,7 @@ class DisplayUtils:
         point_size: int = 20,
         alpha: float = 0.6,
     ) -> bool:
-        """Save a regression scatter plot without displaying it."""
+        """Save a regression scatter plot with 3x3 colouring based on age brackets (<18, 18-25, >25)."""
         targets_arr = np.asarray(list(targets), dtype=float)
         preds_arr = np.asarray(list(predictions), dtype=float)
         if targets_arr.size == 0:
@@ -226,8 +228,26 @@ class DisplayUtils:
             axis_min = min_val - padding
             axis_max = max_val + padding
 
+        def _bin(x: float) -> int:
+            if x < 18.0:
+                return 0
+            if x < 25.0:
+                return 1
+            return 2
+
+        colors = []
+        for t, p in zip(targets_arr, preds_arr):
+            tb = _bin(t)
+            pb = _bin(p)
+            if tb == pb:
+                colors.append("green")  # on-diagonal
+            elif (tb == 0 and pb == 2) or (tb == 2 and pb == 0):
+                colors.append("red")  # opposite corners
+            else:
+                colors.append("gold")  # adjacent/off-diagonal
+
         fig, ax = plt.subplots(figsize=(6, 6))
-        ax.scatter(targets_arr, preds_arr, s=point_size, alpha=alpha, edgecolors="none")
+        ax.scatter(targets_arr, preds_arr, s=point_size, alpha=alpha, edgecolors="none", c=colors)
         ax.plot([axis_min, axis_max], [axis_min, axis_max], "r--", linewidth=1)
         for thr in (18.0, 25.0):
             ax.axvline(thr, color="black", linestyle=":", linewidth=1)
@@ -240,11 +260,115 @@ class DisplayUtils:
         ax.set_ylim(axis_min, axis_max)
         ax.set_aspect("equal", adjustable="box")
         ax.grid(True, linestyle="--", linewidth=0.5, alpha=0.3)
+
         fig.tight_layout()
 
         save_path = Path(save_path)
         save_path.parent.mkdir(parents=True, exist_ok=True)
         fig.savefig(save_path)
+        plt.close(fig)
+        return True
+
+    @staticmethod
+    def save_per_user_boxplot(
+        user_ids: Iterable,
+        targets: Iterable[float],
+        predictions: Iterable[float],
+        *,
+        save_path,
+        title: Optional[str] = None,
+    ) -> bool:
+        """Save a box plot of predicted age distributions per user positioned at true age."""
+        user_ids = list(user_ids)
+        targets_arr = np.asarray(list(targets), dtype=float)
+        preds_arr = np.asarray(list(predictions), dtype=float)
+        if len(user_ids) == 0 or targets_arr.size == 0 or preds_arr.size == 0:
+            print("save_per_user_boxplot: no data to plot.")
+            return False
+        if not (len(user_ids) == targets_arr.size == preds_arr.size):
+            print("save_per_user_boxplot: input lengths mismatch.")
+            return False
+
+        per_user_preds = defaultdict(list)
+        per_user_targets = defaultdict(list)
+        for uid, tgt, pred in zip(user_ids, targets_arr, preds_arr):
+            per_user_preds[uid].append(float(pred))
+            per_user_targets[uid].append(float(tgt))
+
+        positions = []
+        box_data = []
+        colours = []
+
+        def _bin(x: float) -> int:
+            if x < 18.0:
+                return 0
+            if x < 25.0:
+                return 1
+            return 2
+        for uid, preds in per_user_preds.items():
+            if not preds:
+                continue
+            tgt_mean = float(np.mean(per_user_targets[uid])) if per_user_targets[uid] else 0.0
+            positions.append(tgt_mean)
+            box_data.append(preds)
+            tb = _bin(tgt_mean)
+            pb = _bin(np.median(preds))
+            if tb == pb:
+                colours.append("green")
+            elif (tb == 0 and pb == 2) or (tb == 2 and pb == 0):
+                colours.append("red")
+            else:
+                colours.append("gold")
+
+        if not box_data:
+            print("save_per_user_boxplot: no per-user predictions to plot.")
+            return False
+
+        fig, ax = plt.subplots(figsize=(6, 6))
+        bp = ax.boxplot(
+            box_data,
+            positions=positions,
+            widths=0.15,
+            patch_artist=True,
+            boxprops=dict(facecolor="white", alpha=0.6),
+            medianprops=dict(color="black"),
+            whiskerprops=dict(color="#4575b4"),
+            capprops=dict(color="#4575b4"),
+            flierprops=dict(marker=".", markersize=2, markerfacecolor="#313695", alpha=0.5),
+        )
+        for patch, color in zip(bp["boxes"], colours):
+            patch.set_facecolor(color)
+            patch.set_edgecolor(color)
+        medians = [np.median(b) if len(b) > 0 else 0.0 for b in box_data]
+        # median marker matches box colour
+        ax.scatter(positions, medians, color=[c for c in colours], s=8)
+        ax.set_xlabel("True age (per user mean)")
+        ax.set_ylabel("Predicted age (distribution per user)")
+        if title:
+            ax.set_title(title)
+        ax.grid(True, alpha=0.2)
+        # axis colour kept default; ticks handled below
+
+        axis_min = 0.0
+        axis_max = 60.0
+        ax.set_xlim(axis_min, axis_max)
+        ax.set_ylim(axis_min, axis_max)
+        ax.set_aspect("equal", adjustable="box")
+        ax.plot([axis_min, axis_max], [axis_min, axis_max], "r--", linewidth=1, label="Ideal")
+        for thr in (18.0, 25.0):
+            ax.axvline(thr, color="black", linestyle=":", linewidth=1)
+            ax.axhline(thr, color="black", linestyle=":", linewidth=1)
+
+        tick_values = [10, 20, 30, 40, 50, 60]
+        ax.set_xticks(tick_values)
+        ax.set_xticklabels([str(v) for v in tick_values])
+        ax.set_yticks(tick_values)
+        ax.set_yticklabels([str(v) for v in tick_values])
+        ax.tick_params(axis="x", which="both", bottom=True, top=False, labelbottom=True, length=4)
+        fig.tight_layout()
+        save_path = Path(save_path)
+        save_path.parent.mkdir(parents=True, exist_ok=True)
+        fig.savefig(save_path, dpi=200)
         plt.close(fig)
         return True
 
