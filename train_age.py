@@ -310,6 +310,17 @@ def compute_age_gate_curves(
     return results
 
 
+def _confusion_counts(adult_prob: np.ndarray, targets: np.ndarray, tau: float, *, age_threshold: float = 18.0):
+    """Return TP, TN, FP, FN counts for case1 (admit adults) at a given tau."""
+    is_adult = targets >= age_threshold
+    admit_adult = adult_prob >= tau
+    tp = int(np.logical_and(admit_adult, is_adult).sum())
+    fp = int(np.logical_and(admit_adult, ~is_adult).sum())
+    fn = int(np.logical_and(~admit_adult, is_adult).sum())
+    tn = int(np.logical_and(~admit_adult, ~is_adult).sum())
+    return tp, tn, fp, fn
+
+
 def multimodal_collate(batch):
     images = [b[0] for b in batch]
     points = [b[1] for b in batch]
@@ -729,6 +740,41 @@ def main() -> None:
                 num_thresholds=201,
             )
 
+            # Derive tau choices and confusion counts (case1: admit adults).
+            adult_prob_arr = gate_results["adult_prob"]
+            fprs = gate_results["case1"]["fpr"]
+            tprs = gate_results["case1"]["tpr"]
+            taus = gate_results["case1"]["thresholds"]
+
+            # Closest to top-left corner (0,1)
+            dist = np.sqrt((fprs - 0.0) ** 2 + (tprs - 1.0) ** 2)
+            idx_best = int(np.argmin(dist))
+
+            # Closest to FPR=0.1
+            idx_fpr = int(np.argmin(np.abs(fprs - 0.1)))
+
+            # Closest to TPR=0.9
+            idx_tpr = int(np.argmin(np.abs(tprs - 0.9)))
+
+            summary_lines = []
+            confusion_points = []
+            for label, idx in (
+                ("best_topleft", idx_best),
+                ("fpr_0.1", idx_fpr),
+                ("tpr_0.9", idx_tpr),
+            ):
+                tau = float(taus[idx])
+                tp, tn, fp, fn = _confusion_counts(adult_prob_arr, val_targets_arr, tau, age_threshold=18.0)
+                summary_lines.append(f"{label}: tau={tau:.4f}, TP={tp}, TN={tn}, FP={fp}, FN={fn}, FPR={fprs[idx]:.4f}, TPR={tprs[idx]:.4f}")
+                confusion_points.append(((fprs[idx], tprs[idx]), f"τ={tau:.3f}"))
+            summary_path = output_dir / f"confusion_summary_epoch{epoch}.txt"
+            with summary_path.open("w", encoding="utf-8") as fp:
+                fp.write("\n".join(summary_lines))
+            with history_log_path.open("a", encoding="utf-8") as log_fp:
+                log_fp.write("# Confusion summaries (case1):\n")
+                for line in summary_lines:
+                    log_fp.write(f"# {line}\n")
+
             preds_dump_path = output_dir / "best_val_predictions.npz"
             np.savez(
                 preds_dump_path,
@@ -749,6 +795,8 @@ def main() -> None:
                 title="ROC - Adult Content Gate (admit adults)",
                 auc_value=gate_results["case1"]["auc"],
                 show=False,
+                highlight_points=[pt for pt, _ in confusion_points],
+                highlight_labels=[lbl for _, lbl in confusion_points],
             )
             DisplayUtils.plot_roc_curve(
                 gate_results["case2"]["fpr"],

@@ -440,6 +440,8 @@ class DisplayUtils:
         title: Optional[str] = None,
         auc_value: Optional[float] = None,
         show: bool = False,
+        highlight_points: Optional[list] = None,
+        highlight_labels: Optional[list] = None,
     ) -> Optional[Path]:
         """Plot an ROC-style curve with thresholds encoded by colour."""
         fprs_arr = np.asarray(list(fprs), dtype=float)
@@ -477,6 +479,12 @@ class DisplayUtils:
         ax.set_ylim(0, 1)
         ax.grid(True, linestyle="--", linewidth=0.5, alpha=0.3)
         ax.legend(loc="lower right")
+        if highlight_points:
+            hl = highlight_labels or [None] * len(highlight_points)
+            for (x, y), lbl in zip(highlight_points, hl):
+                ax.scatter([x], [y], marker="s", color="black", s=45, zorder=5)
+                if lbl:
+                    ax.annotate(lbl, (x, y), textcoords="offset points", xytext=(5, -10), fontsize=8, color="black")
         fig.tight_layout()
 
         save_path = Path(save_path)
