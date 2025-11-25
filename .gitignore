@@ -18,3 +18,6 @@ __pycache__/
 
 # Training artifacts
 /runs/
+
+# Local pointnet clone
+/pointnet.pytorch/

@@ -21,6 +21,23 @@ pip install -r requirements.txt
 pip install torch==2.5.1+cu121 torchvision==0.20.1+cu121 torchaudio==2.5.1+cu121 --index-url https://download.pytorch.org/whl/cu121
 ```
 
+### 3. Install PointNet (Windows-compatible, no CUDA ops)
+
+Clone the simple PointNet repo:
+
+```bash
+cd ..
+git clone https://github.com/fxia22/pointnet.pytorch.git
+cd pointnet.pytorch
+pip install -r requirements.txt
+```
+
+Install the library:
+
+```bash
+pip install -e .
+```
+
 ---
 
 ### 3. Model architecture
