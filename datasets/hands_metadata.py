@@ -15,7 +15,14 @@ import pandas as pd
 from PIL import Image, UnidentifiedImageError
 from torch.utils.data import Dataset
 
-from utils import stratified_user_split
+try:
+    from .utils import stratified_user_split
+except ImportError:  # pragma: no cover - fallback for script execution
+    import sys
+    from pathlib import Path as _Path
+
+    sys.path.append(str(_Path(__file__).resolve().parent.parent))
+    from datasets.utils import stratified_user_split
 
 # Base directory (can be overridden via env var or function argument)
 _DEFAULT_ROOT = Path(r"C:\Users\Staff\OneDrive - University of Greenwich\HandsDatasets")
