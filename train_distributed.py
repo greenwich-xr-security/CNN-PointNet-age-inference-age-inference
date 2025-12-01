@@ -374,12 +374,7 @@ def main() -> None:
             f"Loss weights -> NLL: {loss_weights.nll:.3f}, "
             f"MSE: {loss_weights.mse:.3f}, MAE: {loss_weights.mae:.3f}"
         )
-        split_desc = (
-            "Unstratified per-user split (random)."
-            if args.no_stratified_user_split
-            else "Stratified per-user split (adult/minor aware)."
-        )
-        print(f"Split mode: {split_desc}")
+        print("Split mode: Stratified per-user split (integer age bins).")
 
     model = build_age_model(
         use_rgb=use_rgb,
