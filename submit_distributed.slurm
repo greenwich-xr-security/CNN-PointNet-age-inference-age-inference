@@ -42,7 +42,7 @@ LOSS_WEIGHT_MAE="${LOSS_WEIGHT_MAE:-0.15}"
 PATIENCE="${PATIENCE:-60}"
 IMG_SIZE="${IMG_SIZE:-}"
 # RGB backbone options: restrict to efficientnet_b0/b2/b4 for this sweep
-RGB_BACKBONES="${RGB_BACKBONES:-efficientnet_b1 efficientnet_b2 efficientnet_b4}"
+RGB_BACKBONES="${RGB_BACKBONES:-efficientnet_b2 efficientnet_b4}"
 # Modalities: rgb | pc | fused
 MODALITIES="${MODALITIES:-rgb fused}"
 # Point counts to try when point clouds are enabled
