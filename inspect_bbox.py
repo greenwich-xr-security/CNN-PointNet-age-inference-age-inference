@@ -10,7 +10,7 @@ import cv2
 from matplotlib import pyplot as plt
 from matplotlib.widgets import Button
 from displayUtils import DisplayUtils
-from hands_dataset import (
+from datasets.hands_metadata import (
     load_archive_metadata,
     load_combined_metadata,
     load_handrgbd_metadata,

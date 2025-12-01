@@ -11,17 +11,15 @@ from torch.utils.data import DataLoader, DistributedSampler
 from sklearn.model_selection import train_test_split
 from tqdm import tqdm
 
+from datasets.age import AgeDataset, DEFAULT_NUM_POINTS
+from datasets.hands_metadata import get_dataset_root, load_combined_metadata, set_dataset_root
+from datasets.transforms import build_transforms
+from datasets.utils import filter_metadata, multimodal_collate, stratified_user_split
 from displayUtils import DisplayUtils
-from hands_dataset import get_dataset_root, load_combined_metadata, set_dataset_root
 from metrics import LossWeights, weighted_regression_loss
 from models import EFFICIENTNET_IMG_SIZES, build_age_model
 from train_age import (
-    AgeDataset,
-    build_transforms,
     compute_age_gate_curves,
-    filter_metadata,
-    multimodal_collate,
-    stratified_user_split,
     set_random_seed,
 )
 
@@ -32,7 +30,6 @@ DEFAULT_SEED = 42
 DEFAULT_MIN_DELTA = 0.001
 DEFAULT_PATIENCE = 20
 DEFAULT_IMG_SIZE = 224
-DEFAULT_NUM_POINTS = 2048
 
 
 def parse_args() -> argparse.Namespace:

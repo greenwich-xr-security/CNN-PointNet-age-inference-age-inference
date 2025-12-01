@@ -7,13 +7,14 @@ import numpy as np
 import pandas as pd
 import torch
 import torch.nn as nn
-from PIL import Image, ImageOps
 from sklearn.model_selection import train_test_split
-from torch.utils.data import Dataset, DataLoader
-from torchvision import transforms
+from torch.utils.data import DataLoader
 from tqdm import tqdm
 
-from hands_dataset import get_dataset_root, load_combined_metadata, set_dataset_root
+from datasets.age import AgeDataset, DEFAULT_NUM_POINTS
+from datasets.hands_metadata import get_dataset_root, load_combined_metadata, set_dataset_root
+from datasets.transforms import build_transforms
+from datasets.utils import filter_metadata, multimodal_collate, stratified_user_split
 from displayUtils import DisplayUtils
 from metrics import LossWeights, weighted_regression_loss
 from models import EFFICIENTNET_IMG_SIZES, FusionConfig, build_age_model
@@ -26,7 +27,6 @@ DEFAULT_EPOCHS = 40
 DEFAULT_LR = 3e-4
 DEFAULT_SEED = 42
 DEFAULT_IMG_SIZE = 224
-DEFAULT_NUM_POINTS = 2048
 DEVICE = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 DEFAULT_PATIENCE = 20
 
@@ -36,165 +36,6 @@ def set_random_seed(seed: int) -> None:
     torch.manual_seed(seed)
     if DEVICE.type == "cuda":
         torch.cuda.manual_seed_all(seed)
-
-
-def filter_metadata(df: pd.DataFrame, *, require_xyz: bool = False) -> pd.DataFrame:
-    df = df[df["aspect"].str.contains("dorsal", case=False, na=False)]
-    df = df[df["age"].notna()]
-    if require_xyz:
-        df = df[df["xyz_path"].notna()]
-    df = df.copy()
-    df["age"] = df["age"].astype(float)
-    return df.reset_index(drop=True)
-
-
-def stratified_user_split(
-    metadata: pd.DataFrame,
-    *,
-    test_size: float,
-    random_state: int,
-    adult_threshold: float = 18.0,
-) -> tuple[np.ndarray, np.ndarray]:
-    """Split unique users while preserving the adult/minor ratio when possible."""
-    if "user_id" not in metadata.columns or "age" not in metadata.columns:
-        raise ValueError("metadata must include 'user_id' and 'age' columns for stratification.")
-
-    per_user = (
-        metadata.groupby("user_id")["age"]
-        .mean()
-        .rename("mean_age")
-        .reset_index()
-    )
-    if per_user.empty:
-        raise ValueError("No user records available after filtering; cannot split dataset.")
-
-    labels = (per_user["mean_age"].to_numpy() >= adult_threshold).astype(int)
-    user_ids = per_user["user_id"].to_numpy()
-
-    stratify = None
-    unique_labels, label_counts = np.unique(labels, return_counts=True)
-    if unique_labels.size > 1:
-        n_test = np.ceil(label_counts * test_size).astype(int)
-        n_train = label_counts - n_test
-        if np.all(n_test >= 1) and np.all(n_train >= 1):
-            stratify = labels
-
-    train_ids, test_ids = train_test_split(
-        user_ids,
-        test_size=test_size,
-        random_state=random_state,
-        stratify=stratify,
-    )
-    return train_ids, test_ids
-
-
-class AgeDataset(Dataset):
-    def __init__(
-        self,
-        records: pd.DataFrame,
-        *,
-        use_rgb: bool = True,
-        use_pointcloud: bool = False,
-        transform=None,
-        num_points: int = DEFAULT_NUM_POINTS,
-        pc_jitter_std: float = 0.0,
-    ):
-        self.records = records.reset_index(drop=True)
-        self.transform = transform
-        self.use_rgb = use_rgb
-        self.use_pointcloud = use_pointcloud
-        self.num_points = num_points
-        self.pc_jitter_std = pc_jitter_std
-
-    def __len__(self):
-        return len(self.records)
-
-    def _load_image(self, row):
-        image_path: Path = row["image_path"]
-        image = Image.open(image_path).convert("RGB")
-
-        bbox = row.get("bbox")
-        if isinstance(bbox, (list, tuple)) and len(bbox) == 4:
-            try:
-                xmin, ymin, xmax, ymax = [int(v) for v in bbox]
-                if xmax > xmin and ymax > ymin:
-                    w, h = image.size
-                    sq_xmin, sq_ymin, sq_xmax, sq_ymax = DisplayUtils.make_square_bbox(
-                        (xmin, ymin, xmax, ymax)
-                    )
-
-                    pad_left = max(0, -sq_xmin)
-                    pad_top = max(0, -sq_ymin)
-                    pad_right = max(0, sq_xmax - w)
-                    pad_bottom = max(0, sq_ymax - h)
-
-                    if pad_left or pad_top or pad_right or pad_bottom:
-                        image = ImageOps.expand(
-                            image,
-                            border=(pad_left, pad_top, pad_right, pad_bottom),
-                            fill=(0, 0, 0),
-                        )
-                        sq_xmin += pad_left
-                        sq_xmax += pad_left
-                        sq_ymin += pad_top
-                        sq_ymax += pad_top
-
-                    sq_xmin = max(0, sq_xmin)
-                    sq_ymin = max(0, sq_ymin)
-                    sq_xmax = max(sq_xmin + 1, min(image.size[0], sq_xmax))
-                    sq_ymax = max(sq_ymin + 1, min(image.size[1], sq_ymax))
-                    image = image.crop((sq_xmin, sq_ymin, sq_xmax, sq_ymax))
-            except Exception:
-                pass
-        if self.transform:
-            image = self.transform(image)
-        return image
-
-    def _load_points(self, row) -> torch.Tensor:
-        xyz_path = row.get("xyz_path")
-        if xyz_path is None or pd.isna(xyz_path):
-            raise RuntimeError("Point cloud requested but xyz_path missing.")
-        xyz_path = Path(xyz_path)
-        if not xyz_path.is_file():
-            raise RuntimeError(f"Point cloud file not found: {xyz_path}")
-        coords = np.load(xyz_path, allow_pickle=False)
-        if coords.ndim == 3 and coords.shape[-1] >= 3:
-            coords = coords.reshape(-1, coords.shape[-1])
-        if coords.ndim != 2 or coords.shape[1] < 3:
-            raise RuntimeError(f"Point cloud has unexpected shape {coords.shape}")
-        coords = coords[:, :3].astype(np.float32)
-        # Remove non-finite points
-        finite_mask = np.isfinite(coords).all(axis=1)
-        coords = coords[finite_mask]
-        if coords.shape[0] == 0:
-            raise RuntimeError(f"Point cloud empty: {xyz_path}")
-
-        n_points = coords.shape[0]
-        target = max(1, int(self.num_points))
-        if n_points >= target:
-            idx = np.random.choice(n_points, target, replace=False)
-        else:
-            idx = np.random.choice(n_points, target, replace=True)
-        coords = coords[idx]
-
-        coords = coords - np.mean(coords, axis=0, keepdims=True)
-        norms = np.linalg.norm(coords, axis=1, keepdims=True)
-        max_norm = float(np.max(norms)) if norms.size else 1.0
-        if max_norm > 0:
-            coords = coords / max_norm
-        if self.pc_jitter_std > 0:
-            coords = coords + np.random.normal(scale=self.pc_jitter_std, size=coords.shape).astype(np.float32)
-        # Final guard against numerical issues
-        coords = np.nan_to_num(coords, nan=0.0, posinf=0.0, neginf=0.0)
-        return torch.from_numpy(coords)
-
-    def __getitem__(self, idx):
-        row = self.records.iloc[idx]
-        age = float(row["age"])
-        user_id = row.get("user_id")
-        image = self._load_image(row) if self.use_rgb else None
-        points = self._load_points(row) if self.use_pointcloud else None
-        return image, points, torch.tensor(age, dtype=torch.float32), user_id
 
 
 def compute_adult_probabilities(
@@ -319,42 +160,6 @@ def _confusion_counts(adult_prob: np.ndarray, targets: np.ndarray, tau: float, *
     fn = int(np.logical_and(~admit_adult, is_adult).sum())
     tn = int(np.logical_and(~admit_adult, ~is_adult).sum())
     return tp, tn, fp, fn
-
-
-def multimodal_collate(batch):
-    images = [b[0] for b in batch]
-    points = [b[1] for b in batch]
-    ages = torch.stack([b[2] for b in batch])
-    user_ids = [b[3] for b in batch]
-
-    image_tensor = None
-    point_tensor = None
-
-    if images and images[0] is not None:
-        image_tensor = torch.stack(images)
-    if points and points[0] is not None:
-        point_tensor = torch.stack(points)
-
-    return image_tensor, point_tensor, ages, user_ids
-
-
-def build_transforms(img_size: int):
-    train_transform = transforms.Compose([
-        transforms.RandomResizedCrop(img_size, scale=(0.7, 1.0)),
-        transforms.RandomRotation(degrees=(-180, 180)),
-        transforms.RandomHorizontalFlip(),
-        transforms.ColorJitter(brightness=0.2, contrast=0.2),
-        transforms.ToTensor(),
-        transforms.Normalize(mean=[0.485, 0.456, 0.406], std=[0.229, 0.224, 0.225]),
-    ])
-
-    test_transform = transforms.Compose([
-        transforms.Resize((img_size, img_size)),
-        transforms.ToTensor(),
-        transforms.Normalize(mean=[0.485, 0.456, 0.406], std=[0.229, 0.224, 0.225]),
-    ])
-
-    return train_transform, test_transform
 
 
 def main() -> None:
