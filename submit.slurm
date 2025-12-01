@@ -72,7 +72,6 @@ for RGB_BB in ${RGB_BACKBONES}; do
                 --seed "${SEED}" \
                 --lr 0.0003 \
                 --patience "${PATIENCE}" \
-                --no-stratified-user-split \
                 --loss-weight-nll "${LOSS_WEIGHT_NLL}" \
                 --loss-weight-mse "${LOSS_WEIGHT_MSE}" \
                 --loss-weight-mae "${LOSS_WEIGHT_MAE}" \

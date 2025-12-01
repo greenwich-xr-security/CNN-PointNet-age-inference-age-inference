@@ -15,6 +15,8 @@ import pandas as pd
 from PIL import Image, UnidentifiedImageError
 from torch.utils.data import Dataset
 
+from utils import stratified_user_split
+
 # Base directory (can be overridden via env var or function argument)
 _DEFAULT_ROOT = Path(r"C:\Users\Staff\OneDrive - University of Greenwich\HandsDatasets")
 _ENV_VAR_NAME = "HANDS_DATASETS_ROOT"
@@ -317,6 +319,20 @@ if __name__ == "__main__":
         if per_user_age.empty:
             print("No age values available; histogram skipped.")
         else:
+            bin_info = None
+            strat_df = pd.DataFrame({"user_id": per_user_age.index, "age": per_user_age.values})
+            try:
+                _, _, bin_info = stratified_user_split(
+                    strat_df,
+                    test_size=0.2,
+                    random_state=42,
+                    num_bins=13,
+                    target_bin_size=30,
+                    return_bin_info=True,
+                )
+            except Exception as exc:  # noqa: BLE001
+                print(f"Stratified binning failed: {exc}")
+
             # Build bar chart by dataset source.
             source_for_user = (
                 combined.dropna(subset=["age"])
@@ -357,6 +373,30 @@ if __name__ == "__main__":
             if len(unique_sources) > 1:
                 plt.legend(title="Source")
 
+            if bin_info:
+                edge_candidates = set()
+                for b in bin_info:
+                    left = b.get("age_min_obs", b["age_min"])
+                    right = b.get("age_max_obs", b["age_max"])
+                    edge_candidates.add(left - 0.5)
+                    edge_candidates.add(right + 0.5)
+                for edge in sorted(edge_candidates):
+                    plt.axvline(edge, color="#c44e52", linestyle="--", linewidth=1.2, alpha=0.7)
+                y_top = plt.ylim()[1]
+                for b in bin_info:
+                    left = b.get("age_min_obs", b["age_min"])
+                    right = b.get("age_max_obs", b["age_max"])
+                    mid = 0.5 * (left + right)
+                    plt.text(
+                        mid,
+                        y_top * 0.9,
+                        f"B{b['bin']}: {b['users']}u",
+                        ha="center",
+                        va="top",
+                        fontsize=8,
+                        color="#c44e52",
+                    )
+
             plt.xlabel("Age")
             plt.ylabel("User count")
             plt.title("HandRGBD age distribution (per user)")
@@ -364,6 +404,23 @@ if __name__ == "__main__":
             output_path = Path("age_histogram_users.png")
             plt.savefig(output_path)
             print(f"Saved age histogram to {output_path}")
+            if bin_info:
+                print("Stratified bin summary (integer ages; right-closed bins shown with observed span):")
+                for b in bin_info:
+                    obs_min = b.get("age_min_obs")
+                    obs_max = b.get("age_max_obs")
+                    if obs_min is not None and obs_min.is_integer():
+                        obs_min = int(obs_min)
+                    if obs_max is not None and obs_max.is_integer():
+                        obs_max = int(obs_max)
+                    observed_label = ""
+                    if obs_min is not None and obs_max is not None:
+                        observed_label = f" | observed ages {obs_min}-{obs_max}"
+                    label = observed_label.replace(" | ", "").replace("observed ages ", "")
+                    pretty = label if label else f"{int(b['age_min'])}-{int(b['age_max'])}"
+                    print(
+                        f"  Bin {b['bin']}: {pretty} | users={b['users']} train={b['train_users']} test={b['test_users']}"
+                    )
             plt.show()
 
             # Preview one XYZ npy as a 3D scatter if available.

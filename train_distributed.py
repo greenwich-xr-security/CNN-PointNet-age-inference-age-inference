@@ -8,7 +8,6 @@ import torch
 import torch.distributed as dist
 from torch.nn.parallel import DistributedDataParallel
 from torch.utils.data import DataLoader, DistributedSampler
-from sklearn.model_selection import train_test_split
 from tqdm import tqdm
 
 from datasets.age import AgeDataset, DEFAULT_NUM_POINTS
@@ -39,11 +38,6 @@ def parse_args() -> argparse.Namespace:
         type=str,
         default=None,
         help="Path to the dataset root directory. Overrides the default or env var.",
-    )
-    parser.add_argument(
-        "--no-stratified-user-split",
-        action="store_true",
-        help="Disable per-user stratification when splitting the dataset.",
     )
     parser.add_argument(
         "--output-dir",
@@ -220,15 +214,14 @@ def build_datasets(args: argparse.Namespace, seed: int, use_rgb: bool, use_point
         load_combined_metadata(root=active_root),
         require_xyz=use_pointcloud,
     )
-    if args.no_stratified_user_split:
-        user_ids = metadata["user_id"].unique()
-        train_ids, val_ids = train_test_split(user_ids, test_size=0.2, random_state=seed)
-    else:
-        train_ids, val_ids = stratified_user_split(
-            metadata,
-            test_size=0.2,
-            random_state=seed,
-        )
+    train_ids, val_ids, _ = stratified_user_split(
+        metadata,
+        test_size=0.2,
+        random_state=42,
+        num_bins=13,
+        target_bin_size=30,
+        return_bin_info=True,
+    )
     train_meta = metadata[metadata["user_id"].isin(train_ids)]
     val_meta = metadata[metadata["user_id"].isin(val_ids)]
 

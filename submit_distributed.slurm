@@ -99,7 +99,6 @@ for RGB_BB in ${RGB_BACKBONES}; do
         --num-workers 8 \
         --seed "${SEED}" \
         --patience "${PATIENCE}" \
-        --no-stratified-user-split \
         --loss-weight-nll "${LOSS_WEIGHT_NLL}" \
         --loss-weight-mse "${LOSS_WEIGHT_MSE}" \
         --loss-weight-mae "${LOSS_WEIGHT_MAE}" \

@@ -7,7 +7,6 @@ import numpy as np
 import pandas as pd
 import torch
 import torch.nn as nn
-from sklearn.model_selection import train_test_split
 from torch.utils.data import DataLoader
 from tqdm import tqdm
 
@@ -207,11 +206,6 @@ def main() -> None:
         help="Learning rate for AdamW optimizer (default: 3e-4).",
     )
     parser.add_argument(
-        "--no-stratified-user-split",
-        action="store_true",
-        help="Disable per-user stratification when splitting the dataset.",
-    )
-    parser.add_argument(
         "--loss-weight-nll",
         type=float,
         default=0.5,
@@ -320,15 +314,14 @@ def main() -> None:
         load_combined_metadata(root=active_root),
         require_xyz=use_pointcloud,
     )
-    if args.no_stratified_user_split:
-        user_ids = metadata["user_id"].unique()
-        train_ids, test_ids = train_test_split(user_ids, test_size=0.2, random_state=args.seed)
-    else:
-        train_ids, test_ids = stratified_user_split(
-            metadata,
-            test_size=0.2,
-            random_state=args.seed,
-        )
+    train_ids, test_ids, _ = stratified_user_split(
+        metadata,
+        test_size=0.2,
+        random_state=42,
+        num_bins=13,
+        target_bin_size=30,
+        return_bin_info=True,
+    )
     train_meta = metadata[metadata["user_id"].isin(train_ids)]
     test_meta = metadata[metadata["user_id"].isin(test_ids)]
 
@@ -419,6 +412,9 @@ def main() -> None:
     patience = max(1, int(args.patience))
     epochs_without_improvement = 0
     history_entries: list[dict] = []
+    last_val_user_ids = None
+    last_val_targets = None
+    last_val_predictions = None
 
     for epoch in range(1, args.epochs + 1):
         model.train()
@@ -483,6 +479,9 @@ def main() -> None:
         val_mae /= denom
         val_mse /= denom
         val_std /= denom
+        last_val_user_ids = val_user_ids
+        last_val_targets = val_targets
+        last_val_predictions = val_predictions
 
         print(
             f"Epoch {epoch}: "
@@ -661,12 +660,16 @@ def main() -> None:
             print(f"Saved training history plot to {history_plot_path}")
             break
 
-    # Save bbox gallery using the metadata used for this run.
-    try:
-        gallery_meta = pd.concat([train_meta, test_meta], ignore_index=True)
-    except Exception:
-        gallery_meta = None
-    save_bbox_gallery(gallery_meta, output_dir / "bbox_gallery.png", max_users=20)
+    # Save a final per-user box plot using the last validation epoch data.
+    if last_val_user_ids and last_val_targets and last_val_predictions:
+        final_boxplot_path = output_dir / "age_val_boxplot_final.png"
+        DisplayUtils.save_per_user_boxplot(
+            user_ids=last_val_user_ids,
+            targets=last_val_targets,
+            predictions=last_val_predictions,
+            save_path=final_boxplot_path,
+            title="Validation per-user box plot (final epoch)",
+        )
 
     print("Training complete. Best model saved on validation improvement.")
 
