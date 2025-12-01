@@ -592,8 +592,9 @@ def main() -> None:
                 tp, tn, fp, fn = _confusion_counts(adult_prob_arr, val_targets_arr, tau, age_threshold=18.0)
                 summary_lines.append(f"{label}: tau={tau:.4f}, TP={tp}, TN={tn}, FP={fp}, FN={fn}, FPR={fprs[idx]:.4f}, TPR={tprs[idx]:.4f}")
                 confusion_points.append(((fprs[idx], tprs[idx]), f"τ={tau:.3f}"))
-            summary_path = output_dir / f"confusion_summary_epoch{epoch}.txt"
+            summary_path = output_dir / "confusion_summary.txt"
             with summary_path.open("w", encoding="utf-8") as fp:
+                fp.write(f"epoch={epoch}\n")
                 fp.write("\n".join(summary_lines))
             with history_log_path.open("a", encoding="utf-8") as log_fp:
                 log_fp.write("# Confusion summaries (case1):\n")
