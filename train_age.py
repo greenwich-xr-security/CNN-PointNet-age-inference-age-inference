@@ -314,10 +314,10 @@ def main() -> None:
         load_combined_metadata(root=active_root),
         require_xyz=use_pointcloud,
     )
-    train_ids, test_ids, _ = stratified_user_split(
+    train_ids, test_ids, bin_info = stratified_user_split(
         metadata,
         test_size=0.2,
-        random_state=42,
+        random_state=args.seed,
         num_bins=13,
         target_bin_size=30,
         return_bin_info=True,
@@ -342,6 +342,32 @@ def main() -> None:
         f"MSE: {loss_weights.mse:.3f}, MAE: {loss_weights.mae:.3f}"
     )
     print("Split mode: Stratified per-user split (integer age bins).")
+
+    # Persist split/bins summary for reproducibility.
+    split_summary_path = output_dir / "split_summary.txt"
+    try:
+        with split_summary_path.open("w", encoding="utf-8") as fp:
+            fp.write(f"Seed: {args.seed}\n")
+            fp.write(f"Users total: {metadata['user_id'].nunique()}\n")
+            fp.write(f"Train users: {len(train_ids)} | Test users: {len(test_ids)}\n")
+            fp.write("Bins (integer ages):\n")
+            if bin_info:
+                for b in bin_info:
+                    obs_min = b.get("age_min_obs")
+                    obs_max = b.get("age_max_obs")
+                    obs_span = f"{int(obs_min)}-{int(obs_max)}" if obs_min is not None and obs_max is not None else "n/a"
+                    fp.write(
+                        f"  Bin {b['bin']}: {int(b['age_min'])}-{int(b['age_max'])} (obs {obs_span}) "
+                        f"| users={b['users']} train={b['train_users']} test={b['test_users']}\n"
+                    )
+            else:
+                fp.write("  (no bin info available)\n")
+            fp.write("\nTrain user_ids:\n")
+            fp.write(", ".join(sorted([str(uid) for uid in train_ids])) + "\n")
+            fp.write("\nTest user_ids:\n")
+            fp.write(", ".join(sorted([str(uid) for uid in test_ids])) + "\n")
+    except Exception as exc:  # noqa: BLE001
+        print(f"Warning: failed to write split summary to {split_summary_path}: {exc}")
 
     train_ds = AgeDataset(
         train_meta,

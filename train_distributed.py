@@ -214,10 +214,10 @@ def build_datasets(args: argparse.Namespace, seed: int, use_rgb: bool, use_point
         load_combined_metadata(root=active_root),
         require_xyz=use_pointcloud,
     )
-    train_ids, val_ids, _ = stratified_user_split(
+    train_ids, val_ids, bin_info = stratified_user_split(
         metadata,
         test_size=0.2,
-        random_state=42,
+        random_state=seed,
         num_bins=13,
         target_bin_size=30,
         return_bin_info=True,
@@ -244,7 +244,7 @@ def build_datasets(args: argparse.Namespace, seed: int, use_rgb: bool, use_point
         num_points=args.num_points,
         pc_jitter_std=0.0,
     )
-    return train_ds, val_ds, active_root, len(train_meta), len(val_meta)
+    return train_ds, val_ds, active_root, len(train_meta), len(val_meta), bin_info, train_ids, val_ids
 
 
 def build_dataloaders(
@@ -341,7 +341,7 @@ def main() -> None:
 
     set_random_seed(args.seed + rank)
 
-    train_dataset, val_dataset, active_root, train_len, val_len = build_datasets(
+    train_dataset, val_dataset, active_root, train_len, val_len, bin_info, train_ids, val_ids = build_datasets(
         args,
         args.seed,
         use_rgb=use_rgb,
@@ -375,6 +375,30 @@ def main() -> None:
             f"MSE: {loss_weights.mse:.3f}, MAE: {loss_weights.mae:.3f}"
         )
         print("Split mode: Stratified per-user split (integer age bins).")
+        split_summary_path = output_dir / "split_summary.txt"
+        try:
+            with split_summary_path.open("w", encoding="utf-8") as fp:
+                fp.write(f"Seed: {args.seed}\n")
+                fp.write(f"Users total: {len(set(train_ids) | set(val_ids))}\n")
+                fp.write(f"Train users: {len(train_ids)} | Val users: {len(val_ids)}\n")
+                fp.write("Bins (integer ages):\n")
+                if bin_info:
+                    for b in bin_info:
+                        obs_min = b.get("age_min_obs")
+                        obs_max = b.get("age_max_obs")
+                        obs_span = f"{int(obs_min)}-{int(obs_max)}" if obs_min is not None and obs_max is not None else "n/a"
+                        fp.write(
+                            f"  Bin {b['bin']}: {int(b['age_min'])}-{int(b['age_max'])} (obs {obs_span}) "
+                            f"| users={b['users']} train={b['train_users']} test={b['test_users']}\n"
+                        )
+                else:
+                    fp.write("  (no bin info available)\n")
+                fp.write("\nTrain user_ids:\n")
+                fp.write(", ".join(sorted([str(uid) for uid in train_ids])) + "\n")
+                fp.write("\nVal user_ids:\n")
+                fp.write(", ".join(sorted([str(uid) for uid in val_ids])) + "\n")
+        except Exception as exc:  # noqa: BLE001
+            print(f"Warning: failed to write split summary to {split_summary_path}: {exc}")
 
     model = build_age_model(
         use_rgb=use_rgb,
